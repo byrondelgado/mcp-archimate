@@ -3,7 +3,7 @@
 [![CI](https://github.com/byrondelgado/mcp-archimate/actions/workflows/ci.yml/badge.svg)](https://github.com/byrondelgado/mcp-archimate/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/mcp-archimate)](https://pypi.org/project/mcp-archimate/)
 [![Python](https://img.shields.io/pypi/pyversions/mcp-archimate)](https://pypi.org/project/mcp-archimate/)
-[![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](https://github.com/byrondelgado/mcp-archimate/blob/main/LICENSE)
 
 An [MCP](https://modelcontextprotocol.io/) server that lets an AI agent build,
 validate and export real [ArchiMate](https://www.opengroup.org/archimate-forum/archimate-overview)

@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4] - 2026-07-28
+
+Documentation only. No code or tool behaviour changed.
+
+### Fixed
+
+- **The license badge still linked to a 404 on PyPI.** 0.7.3 made the README's
+  links absolute but missed this one, because it is a nested image-link —
+  `[![alt](image)](target)` — and the rewrite matched the inner image rather
+  than the outer target. The verification used the same faulty pattern as the
+  fix, so it reported clean. Re-checked with a paren-balancing scan that reads
+  every link target directly. (ARC-055)
+
 ## [0.7.3] - 2026-07-28
 
 Documentation only. No code or tool behaviour changed.
