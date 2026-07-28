@@ -95,33 +95,152 @@ npx @modelcontextprotocol/inspector uvx mcp-archimate
 No API keys, no environment variables, no configuration file. The server needs
 none of them.
 
-## Quickstart
+## Example prompts
 
-Three things worth trying first. Ask your agent in plain language — the tool
-names below are what it will reach for.
+You talk to your agent in plain language; it picks the tools. The tool names
+below are just what it will reach for, so you can follow along.
 
-**Open an existing model.** `load_model_from_file` loads *and* inspects in one
-call, so the agent immediately knows the element counts, validation state and
-what to do next.
+Everything here is copy-pasteable. Start with the first one.
 
-> "Load `~/models/enterprise.archimate` and tell me what's in it."
+### Build something small
 
-**Build one from a description.** `create_empty_model`, then elements and
-relationships, then `auto_layout_view` to make the diagram readable.
+```
+Create an ArchiMate model of a customer onboarding process. Cover the business
+layer (the customer, the onboarding process, the identity check) and the
+application layer (the onboarding portal and an identity verification service).
+Connect them properly, put it in one view, lay it out, and export it so I can
+open it in Archi.
+```
 
-> "Create a model of a customer onboarding process with the business, application
-> and technology layers, and lay out a view showing how they connect."
+*Uses `create_empty_model` → `add_element` → `add_relationship` →
+`create_view` → `auto_layout_view` → `export_model_to_file`.*
 
-**Validate and export.** `build_quality_report` first, then
-`export_model_to_file` with `quality_gate="strict"` so a broken model cannot
-reach disk.
+### Explore a model you already have
 
-> "Check the model for problems, fix what's safely fixable, then export it for
-> Archi."
+```
+Load ~/models/enterprise.archimate and tell me what's in it: how big it is,
+what's in each layer, and whether anything is broken.
+```
 
-Agents should call `get_usage_guide` before anything else — it returns the
-operating rules, common anti-patterns and recommended call sequences. It exists
-so the agent does not go reading the server's source code to work out what to do.
+`load_model_from_file` loads **and** inspects in one call, so the agent gets
+counts, validation state and view summaries immediately.
+
+Follow-ups worth asking:
+
+```
+Which elements aren't used in any view?
+```
+```
+Show me everything that depends on the payment service.
+```
+
+### Edit an existing model
+
+The common case after the first build. Be specific about what to change and the
+agent will make a focused edit rather than rebuilding.
+
+```
+Add a "Fraud Screening" application service to the model, have it serve the
+checkout process, and host it on the same node as the payment service. Then
+re-lay-out the views it appears in.
+```
+
+```
+Rename "Cust Mgmt Svc" to "Customer Management Service" everywhere, and give it
+a proper description explaining what it does.
+```
+
+```
+The order service and the inventory service are connected with a Serving
+relationship, but it should be asynchronous. Change it to a Flow relationship
+and tell me if that's actually valid ArchiMate.
+```
+
+That last one is worth trying — the server will tell you which relationship
+types are legal between those two element types, with alternatives, rather than
+silently accepting something Archi will reject.
+
+### Improve a model
+
+```
+Review this model for quality problems and fix the ones that are safely
+fixable. Explain anything you can't fix automatically and why.
+```
+
+*Uses `build_quality_report` → `repair_semantic_issues`. The server only
+auto-repairs deterministic cases; anything needing an architectural decision is
+reported back to you rather than guessed at.*
+
+```
+Every view in this model is a wall of boxes. Add layer bands, lay everything
+out again, and add notes explaining what each view is for.
+```
+
+```
+Some of my relationships aren't shown in any view. Find them and add a coverage
+view so nothing is hidden.
+```
+
+### Validate and export
+
+```
+Check the model for problems, then export it to ~/Desktop/architecture.archimate
+in Archi's native format with a strict quality gate so it won't write a broken
+file.
+```
+
+`quality_gate="strict"` blocks the export on visual, semantic or coverage
+failures — useful when the file is going to someone else.
+
+To *look* at a diagram without opening Archi:
+
+```
+Render the Application Cooperation view to an SVG on my Desktop.
+```
+
+### A full build
+
+A single prompt that exercises most of the server. Expect it to take a few
+minutes and make a lot of tool calls.
+
+```
+Create an ArchiMate model representing a realistic composite ecommerce
+architecture (not tied to a real company). Use the archimate MCP tools. Scope:
+
+- Business layer: Customer / Warehouse Staff / Support Rep actors with roles,
+  core processes (browse, cart, checkout, payment, fulfillment, support),
+  business services, and key business objects (order, customer account).
+- Application layer: microservices — storefront web app, API gateway, and one
+  component + service pair per capability (catalog, search, cart, checkout,
+  payment, order management, inventory, shipping, notification, customer
+  support), plus their data objects.
+- Technology layer: cloud infrastructure — container orchestration, a database
+  per service that needs one, a cache, a message broker for async events, a
+  load balancer / CDN, and an external payment gateway node.
+- Relationships: standard ArchiMate conventions (ApplicationService serves
+  BusinessProcess, Component realizes Service, Node serves Component for
+  hosting, Access for data reads/writes, Flow for async events). Validate with
+  semantic_validation='strict' and fix any invalid combinations using the
+  suggested repairs.
+- Views: Business Process View, Application Cooperation View, Technology
+  Deployment View, and a Layered Overview showing one cross-layer slice (the
+  checkout journey end to end). Auto-layout each view with layer bands.
+- Run ensure_all_relationships_in_views, build_quality_report and
+  validate_model before exporting. Export with quality_gate='strict'.
+
+Add descriptions and annotations throughout.
+
+Skip the clarifying questions — go straight to building.
+```
+
+The last line matters. Without it a good agent will stop and ask you to narrow
+the scope, which is usually the right instinct but not what you want here.
+
+### A note for agents
+
+Call `get_usage_guide` first. It returns the operating rules, common
+anti-patterns and recommended call sequences — it exists so an agent does not
+have to read this server's source code to work out how to use it.
 
 ## What's in the box
 

@@ -5,6 +5,41 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-07-28
+
+Documentation only. No code or tool behaviour changed.
+
+### Changed
+
+- **README and User Guide no longer contradict each other on installation.**
+  `docs/USER_GUIDE.md` predated the PyPI release and still opened with
+  `git clone <repository-url>` while the README said "nothing to clone". The
+  User Guide now leads with `uvx mcp-archimate` and treats the source checkout
+  as the contributor path. Both documents now describe the same four MCP clients
+  (Claude Code, Claude Desktop, Codex, MCP Inspector) with identical
+  configuration and the same `archimate` server key, so prompts stay portable
+  between them. (ARC-054)
+- **The User Guide documents the security model.** It was previously silent on
+  the filesystem trust boundary and on model content being untrusted input —
+  the one thing worth knowing before pointing an agent at your disk. (ARC-054)
+
+### Added
+
+- **Worked example prompts in the README**, covering building a small model,
+  exploring an existing one, editing it, improving it, validating and exporting,
+  and one full end-to-end build. Editing and improving an existing model — the
+  common case once a model exists — had no example at all before. (ARC-054)
+- **Troubleshooting for two things that look like faults and are not**: an MCP
+  client showing no tools (now with a way to tell a broken server from a broken
+  config), and the server appearing to hang, which is correct stdio behaviour.
+  (ARC-054)
+
+### Fixed
+
+- Stale references in the User Guide: the server was still described as
+  `archimate-mcp` (renamed in 0.7.1), and the `mcp[cli]` section described
+  Claude Desktop install workflows that no longer exist. (ARC-054)
+
 ## [0.7.1] - 2026-07-28
 
 ### Fixed

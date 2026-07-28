@@ -10,6 +10,7 @@ The server provides an in-memory ArchiMate model workspace backed by `pyArchimat
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Running The Server](#running-the-server)
+- [Security Model](#security-model)
 - [Connecting From MCP Clients](#connecting-from-mcp-clients)
 - [Core Concepts](#core-concepts)
 - [Response Format](#response-format)
@@ -39,8 +40,9 @@ The server currently manages one active model per server process. Creating or lo
 ## Requirements
 
 - Python 3.10 or newer.
-- `uv` for dependency management.
-- An MCP client, such as Claude Desktop, MCP Inspector, or a custom MCP client.
+- An MCP client — Claude Code, Claude Desktop, Codex, MCP Inspector, or your own.
+- [uv](https://docs.astral.sh/uv/) if you want the one-line `uvx` install, or if
+  you are working from a checkout. Not required if you `pip install` instead.
 
 The project's runtime dependencies are:
 
@@ -49,118 +51,159 @@ The project's runtime dependencies are:
 - `pydantic`
 - `lxml`
 
-The `mcp[cli]` extra, which provides the `mcp` command used by the Inspector and
-Claude Desktop install workflows below, is a **development** dependency rather
-than a runtime one. `uv sync` installs it by default, so the commands in
-[Connecting From MCP Clients](#connecting-from-mcp-clients) work from a clone.
-The server itself never needs it.
+These four are all a normal install pulls in. The `mcp[cli]` extra — which
+provides the `mcp` command behind `uv run mcp dev` — is a **development**
+dependency, not a runtime one, so `uvx mcp-archimate` stays lean. `uv sync`
+installs it by default in a checkout.
 
 ## Installation
 
-Clone the repository and install dependencies:
+You do not need a checkout to use this server. With
+[uv](https://docs.astral.sh/uv/):
 
 ```bash
-git clone <repository-url>
+uvx mcp-archimate
+```
+
+That fetches the published package and runs it over stdio. Alternatives:
+
+```bash
+pipx run mcp-archimate
+pip install mcp-archimate
+```
+
+Requires Python 3.10 or newer. The server needs no API keys, no environment
+variables and no configuration file.
+
+### From source (contributors)
+
+Only needed if you are changing the server itself. See
+[CONTRIBUTING.md](../CONTRIBUTING.md) for the full workflow.
+
+```bash
+git clone https://github.com/byrondelgado/mcp-archimate.git
 cd mcp-archimate
-uv sync
+uv sync --all-groups
 ```
 
-If your environment does not support `uv sync`, create the virtual environment and sync from the project metadata:
-
-```bash
-uv venv
-uv sync
-```
-
-Verify that the server starts:
-
-```bash
-uv run python -m pyarchimate_mcp_server.server
-```
-
-The command starts the MCP server using stdio. Stop it with `Ctrl+C` when testing from a terminal.
-
-## Running The Server
-
-From the repository root, run either entrypoint:
-
-```bash
-uv run python -m pyarchimate_mcp_server.server
-```
-
-or:
+Verify it starts:
 
 ```bash
 uv run mcp-archimate
 ```
 
-Both commands run the FastMCP application named `archimate-mcp`.
+It will sit waiting for JSON-RPC on stdin — that is correct behaviour for a
+stdio MCP server, not a hang. Stop it with `Ctrl+C`.
+
+## Running The Server
+
+Normal use is `uvx mcp-archimate`, which your MCP client runs for you (see the
+next section). From a checkout, either of these is equivalent:
+
+```bash
+uv run mcp-archimate
+uv run python -m pyarchimate_mcp_server.server
+```
+
+All three run the same FastMCP application, which identifies itself to clients
+as `mcp-archimate` with the installed package version.
+
+## Security Model
+
+Before pointing an agent at this server, know two things. The full picture is in
+[SECURITY.md](../SECURITY.md), and the README carries a summary.
+
+**The server has the filesystem rights of whoever launched it.**
+`load_model_from_file` reads any path you can read; `export_model_to_file` and
+`render_view_to_svg_file` write any path you can write, overwriting without
+prompting. There is no allowed-root restriction. Paths are chosen by the agent,
+so treat a path argument the way you would treat a shell command an agent
+proposed.
+
+**Model content is untrusted input.** The loader rejects DTDs and entity
+declarations and parses with external entity resolution disabled, so XXE and
+entity-expansion attacks are blocked. What it cannot block is prompt injection:
+element names, documentation and properties are attacker-controllable text that
+flows back to your agent. Treat model content as data, never as instructions.
 
 ## Connecting From MCP Clients
 
-### MCP Inspector
+Every client below launches the same stdio process. The server name `archimate`
+is what you will type to refer to it — use the same name everywhere so your
+prompts stay portable.
 
-Use the Inspector during local development to browse resources, inspect tool schemas, and run test calls:
-
-```bash
-uv run mcp dev pyarchimate_mcp_server/server.py
-```
-
-If you want the Inspector to mount the local package in editable mode:
+### Claude Code
 
 ```bash
-uv run mcp dev pyarchimate_mcp_server/server.py --with-editable .
+claude mcp add archimate -- uvx mcp-archimate
 ```
 
-### Claude Desktop With MCP CLI
+### Claude Desktop
 
-Install the server into Claude Desktop with:
-
-```bash
-uv run mcp install pyarchimate_mcp_server/server.py --name "ArchiMate MCP Server"
-```
-
-You can pass environment variables during install:
-
-```bash
-uv run mcp install pyarchimate_mcp_server/server.py \
-  --name "ArchiMate MCP Server" \
-  -v LOG_LEVEL=INFO
-```
-
-### Claude Desktop Manual Configuration
-
-You can also add the server manually to `claude_desktop_config.json`. Replace `/absolute/path/to/mcp-archimate` with your local repository path.
+In `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
-    "archimate-mcp": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "/absolute/path/to/mcp-archimate",
-        "run",
-        "python",
-        "-m",
-        "pyarchimate_mcp_server.server"
-      ]
+    "archimate": {
+      "command": "uvx",
+      "args": ["mcp-archimate"]
     }
   }
 }
 ```
 
-Restart Claude Desktop after editing the configuration.
+Restart Claude Desktop after editing the file.
 
-### Custom MCP Clients
+### Codex
 
-Custom clients should launch the server as a stdio MCP process. The command should run from the repository root or use `uv --directory` to set it:
+In `~/.codex/config.toml`:
 
-```bash
-uv --directory /absolute/path/to/mcp-archimate run python -m pyarchimate_mcp_server.server
+```toml
+[mcp_servers.archimate]
+command = "uvx"
+args = ["mcp-archimate"]
 ```
 
-The server does not require a network port for stdio clients.
+### MCP Inspector
+
+```bash
+npx @modelcontextprotocol/inspector uvx mcp-archimate
+```
+
+From a checkout, with the dev dependencies installed:
+
+```bash
+uv run mcp dev pyarchimate_mcp_server/server.py
+```
+
+The URL the Inspector prints, such as `http://localhost:6274/`, is the
+**Inspector's own UI** — not this server. The server itself has no network
+port; it speaks stdio only. This trips people up regularly.
+
+### Running from a checkout instead of PyPI
+
+While developing, point the client at your working copy:
+
+```json
+{
+  "mcpServers": {
+    "archimate": {
+      "command": "uv",
+      "args": ["--directory", "/absolute/path/to/mcp-archimate", "run", "mcp-archimate"]
+    }
+  }
+}
+```
+
+### Custom clients
+
+Launch `uvx mcp-archimate` as a subprocess and speak JSON-RPC over its stdin and
+stdout. Nothing else is required — no port, no auth, no handshake beyond the
+standard MCP `initialize`.
+
+**stdout is the protocol channel.** Anything else written there would corrupt
+the framing, so all logging goes to stderr. If you are debugging, read stderr.
 
 ## Recommended Agent Workflows
 
@@ -2024,13 +2067,25 @@ Triggering
 
 ### The MCP Client Shows No Tools
 
-Check that the client command runs from the repository root or uses `uv --directory /absolute/path/to/mcp-archimate`. Then restart the MCP client.
+Check the command in your client configuration. With a PyPI install it should be
+`uvx mcp-archimate` with no extra arguments; from a checkout it needs
+`uv --directory /absolute/path/to/mcp-archimate run mcp-archimate`. Restart the
+client after editing the configuration — most read it only at startup.
 
-Use the Inspector to confirm the server registers tools:
+Confirm the server itself is fine by talking to it directly:
 
 ```bash
-uv run mcp dev pyarchimate_mcp_server/server.py
+npx @modelcontextprotocol/inspector uvx mcp-archimate
 ```
+
+If the Inspector lists 45 tools, the server is working and the problem is in the
+client configuration.
+
+### The Server Seems To Hang When I Run It
+
+It is not hanging. A stdio MCP server waits for JSON-RPC on stdin, so running
+`uvx mcp-archimate` in a terminal correctly produces no output and no prompt.
+Your MCP client is what feeds it. Press `Ctrl+C`.
 
 ### `ModelNotFoundError`
 
