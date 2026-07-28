@@ -1,0 +1,56 @@
+mcp-archimate
+Copyright (C) 2025-2026 Byron Delgado
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See the LICENSE file for the full text.
+
+
+Built on pyArchimate
+--------------------
+
+mcp-archimate is a Model Context Protocol server wrapped around pyArchimate,
+which does the actual ArchiMate modelling work. Every model this server
+creates, reads, lays out, validates and exports passes through it.
+
+    pyArchimate
+    Copyright (C) Xavier Mayeur <xavier@mayeur.be>
+    https://github.com/pyArchimate/pyArchimate
+    Licensed under the GNU General Public License v3.0
+
+pyArchimate is a required runtime dependency, not an optional backend, and it
+is GPL-3.0-only. That is why mcp-archimate is distributed under the GPL rather
+than a permissive license: the program cannot function without it, so the
+combined work users actually run is governed by the GPL. Distributing this
+server under permissive terms would misrepresent that.
+
+pyArchimate is not redistributed here. It is declared as a dependency and
+installed separately by pip or uv, under its own license, from its own
+maintainer.
+
+
+Other runtime dependencies
+--------------------------
+
+    mcp (Model Context Protocol Python SDK)  MIT
+    https://github.com/modelcontextprotocol/python-sdk
+
+    pydantic                                 MIT
+    https://github.com/pydantic/pydantic
+
+    lxml                                     BSD-3-Clause
+    https://github.com/lxml/lxml
+
+Each is installed separately under its own license. This list covers direct
+runtime dependencies only; run `uv tree` for the full resolved graph.
+
+
+ArchiMate
+---------
+
+ArchiMate is a registered trademark of The Open Group. This project is an
+independent implementation and is not affiliated with, endorsed by, or
+certified by The Open Group. Archi is a trademark of its respective owners;
+this project interoperates with Archi's file formats but is not affiliated
+with the Archi project.

@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+
+# Read-only. The release workflow is the only one that needs more.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+
+      # Deliberately not part of the test matrix. Ruff's target-version is
+      # pinned to py310 in pyproject.toml, so the result cannot differ between
+      # interpreters — running it four times would only cost time.
+      - run: uv sync --all-groups
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyArchimate declares >=3.10,<3.15, so 3.13 is the current ceiling
+        # worth testing. `requires-python` is >=3.10, so 3.10 must stay.
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v9
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - run: uv sync --all-groups
+      - run: uv run pytest
+
+  build:
+    name: Build and sdist hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+
+      # --no-sources ignores any local source overrides, so this builds what a
+      # PyPI consumer would actually get.
+      - name: Build
+        run: uv build --no-sources
+
+      # The sdist allow-list in pyproject.toml is what keeps internal files out;
+      # this is what notices if that allow-list is ever widened. The 0.6.0 sdist
+      # was 4.8 MB and shipped .backlog/, agent configs and a third-party PDF.
+      - name: Check sdist hygiene
+        run: uv run python scripts/check_sdist_hygiene.py dist/*.tar.gz
+
+      # Prove the wheel is installable and the entry point resolves, rather than
+      # trusting that the metadata mentions it.
+      - name: Verify wheel installs and exposes the console script
+        run: |
+          uv venv /tmp/verify
+          uv pip install --python /tmp/verify/bin/python dist/*.whl
+          /tmp/verify/bin/python -c "import pyarchimate_mcp_server as p; print(p.__version__)"
+          test -x /tmp/verify/bin/mcp-archimate
+
+      # Talks JSON-RPC to the installed console script. Catches two things unit
+      # tests structurally cannot: a tool module missing from the imports in
+      # server.py (tests import it themselves, so they still pass), and stray
+      # stdout output, which corrupts stdio framing and hangs a real client.
+      - name: Smoke test the MCP surface over stdio
+        run: >
+          uv run python scripts/smoke_test_mcp.py
+          /tmp/verify/bin/mcp-archimate --expect-tools 45
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error

@@ -1,0 +1,139 @@
+[project]
+name = "mcp-archimate"
+# Single-sourced from pyarchimate_mcp_server/__init__.py — see [tool.hatch.version].
+# The version used to be duplicated here and drifted; the release workflow now
+# reads __version__ to check that a vX.Y.Z tag matches what it is publishing.
+dynamic = ["version"]
+description = "Model Context Protocol server for ArchiMate enterprise architecture modeling"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # Explicit lower/upper range, NOT a three-part `~=`: `~=1.21.1` capped the
+    # project at 1.21.2 and froze the SDK for eight months. The `<2` ceiling is
+    # upstream's own guidance from the 1.25.0 v1/v2 branch split (v2 renames
+    # FastMCP to MCPServer and reworks the low-level Server API).
+    # The `[cli]` extra is intentionally NOT a runtime dependency: this server
+    # imports only FastMCP and ToolAnnotations. See [dependency-groups].dev.
+    "mcp>=1.28.1,<2.0.0",
+    # Deliberately a three-part `~=` (i.e. 1.12.x only), unlike `mcp` above:
+    # layout.py depends on pyArchimate's *internal* layout surface
+    # (ObstacleMap, RoutingConfig, Rectangle from pyArchimate.view.layout),
+    # which carries no stability guarantee, and model_manager.py is written
+    # throughout against 1.1x adapter patterns. Every minor bump therefore
+    # gets an evaluation task rather than arriving silently.
+    "pyArchimate~=1.12.0",
+    "pydantic>=2.11.0,<3.0.0",
+    "lxml>=6.1.0,<7.0.0",
+]
+authors = [
+    {name = "Byron Delgado", email = "delgadobyron+mcparchimate@gmail.com"},
+]
+keywords = ["archimate", "mcp", "enterprise-architecture", "modeling", "archi"]
+# GPL-3.0-or-later, not a permissive license, and not a free choice: pyArchimate
+# is a required runtime dependency and is GPL-3.0-only, so the combined work
+# users run is governed by the GPL. See NOTICE and decision-001.
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE", "NOTICE"]
+# No "License ::" classifier on purpose: PEP 639 treats license classifiers as
+# mutually exclusive with the SPDX `license` expression above.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Documentation",
+]
+
+[project.urls]
+Homepage = "https://github.com/byrondelgado/mcp-archimate"
+Repository = "https://github.com/byrondelgado/mcp-archimate"
+Issues = "https://github.com/byrondelgado/mcp-archimate/issues"
+Changelog = "https://github.com/byrondelgado/mcp-archimate/blob/main/CHANGELOG.md"
+
+[project.scripts]
+mcp-archimate = "pyarchimate_mcp_server.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "pyarchimate_mcp_server/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pyarchimate_mcp_server"]
+
+# An explicit ALLOW-LIST, not an exclude list. Hatch's default is to ship
+# everything git does not ignore, which is how the 0.6.0 sdist came to be 4.8 MB
+# containing .taskmaster/, .backlog/, agent configs and a third-party PDF. With
+# `include`, anything added to the repo later is excluded by default and has to
+# be named here deliberately. Do not swap this back to `exclude`.
+[tool.hatch.build.targets.sdist]
+include = [
+    "/pyarchimate_mcp_server",
+    "/tests",
+    "/docs",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/CONTRIBUTING.md",
+    "/SECURITY.md",
+    "/LICENSE",
+    "/NOTICE",
+    "/pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W", "I", "N", "UP", "YTT", "S", "BLE", "FBT", "B", "A",
+    "COM", "C4", "DTZ", "T10", "EM", "EXE", "FA", "ISC", "ICN", "G",
+    "INP", "PIE", "T20", "PYI", "PT", "Q", "RSE", "RET", "SLF", "SLOT",
+    "SIM", "TID", "TCH", "INT", "ARG", "PTH", "ERA", "PD", "PGH", "PL",
+    "TRY", "FLY", "NPY", "AIR", "PERF", "FURB", "LOG", "RUF"
+]
+# COM812 conflicts with `ruff format` (ruff emits a warning when both are on).
+ignore = ["S101", "T201", "T203", "COM812"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests import inside test bodies on purpose, after monkeypatching module state.
+"tests/*" = ["PLC0415"]
+
+[tool.ruff.format]
+# ruff >=0.16 formats Python code blocks inside Markdown. Snippets in the docs
+# and in Backlog task files are illustrative, not source, so keep the formatter
+# to real source files.
+exclude = ["*.md"]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[dependency-groups]
+dev = [
+    # The `[cli]` extra (typer, rich, pygments, markdown-it-py, mdurl,
+    # shellingham, annotated-doc) exists solely for the `mcp` console script
+    # behind `uv run mcp dev`. Dev-only, so `uvx mcp-archimate` installs stay
+    # lean; uv installs dev groups by default, so `mcp dev` keeps working.
+    "mcp[cli]>=1.28.1,<2.0.0",
+    "pytest>=9.0.3,<10.0.0",
+    "black>=25.1.0",
+    "pre-commit>=4.2.0",
+    "ruff>=0.11.13",
+]

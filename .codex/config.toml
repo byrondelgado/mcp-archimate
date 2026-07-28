@@ -1,0 +1,24 @@
+# Example Codex MCP configuration for this server.
+#
+# Copy one of the blocks below into your own ~/.codex/config.toml.
+#
+# Running the published package straight from PyPI — no checkout needed:
+#
+#   [mcp_servers.archimate]
+#   command = "uvx"
+#   args = ["mcp-archimate"]
+#
+# The block below runs the server from a local clone instead, which is what
+# you want while developing. Replace the --directory value with the path to
+# your checkout. It invokes the console script directly, so it does not need
+# the dev-only mcp[cli] extra.
+
+[mcp_servers.archimate]
+command = "uv"
+args = [
+    "--directory",
+    "/path/to/mcp-archimate",
+    "run",
+    "mcp-archimate",
+]
+enabled = false

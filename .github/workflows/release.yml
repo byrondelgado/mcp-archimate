@@ -1,0 +1,170 @@
+name: Release
+
+# Two ways in:
+#   - push a `vX.Y.Z` tag on main -> publishes to PyPI, behind a manual approval
+#   - run manually with a version  -> publishes to TestPyPI only, for rehearsals
+#
+# There is no PyPI token anywhere in this repository. Publishing uses Trusted
+# Publishing (OIDC), so the only credential is a short-lived token minted by
+# GitHub for this specific workflow, in this specific environment.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag to rehearse, e.g. v0.7.0 (publishes to TestPyPI only)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+
+      - name: Resolve tag
+        id: resolve
+        run: |
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG"
+
+      # Runs before anything is built. A published version can be yanked but
+      # never reused, so a tag that disagrees with __version__ must stop here.
+      - name: Check tag, version and CHANGELOG agree
+        run: uv run python scripts/check_release_version.py "${{ steps.resolve.outputs.tag }}"
+
+      - run: uv sync --all-groups
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run pytest
+
+  build:
+    name: Build
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+
+      - run: uv build --no-sources
+
+      - name: Check sdist hygiene
+        run: uv run python scripts/check_sdist_hygiene.py dist/*.tar.gz
+
+      - name: Verify the built wheel actually works
+        run: |
+          uv venv /tmp/verify
+          uv pip install --python /tmp/verify/bin/python dist/*.whl
+          uv run python scripts/smoke_test_mcp.py /tmp/verify/bin/mcp-archimate --expect-tools 45
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    # Rehearsals only. Kept off the tag path so a dry run never consumes the
+    # production approval gate.
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/mcp-archimate
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          # TestPyPI accumulates rehearsal uploads; re-running a version that is
+          # already there should not fail the run.
+          skip-existing: true
+
+  publish-pypi:
+    name: Publish to PyPI
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    # This environment must have a required reviewer configured. That approval
+    # is the last human checkpoint before the release becomes permanent.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mcp-archimate
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: Create GitHub Release
+    needs: [verify, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          VERSION="${{ needs.verify.outputs.version }}"
+          # Take everything between this version's heading and the next one.
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[?" v "\\]?" { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "No CHANGELOG section found for $VERSION" >&2
+            exit 1
+          fi
+          echo "Extracted $(wc -l < release-notes.md) lines of notes"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${{ needs.verify.outputs.tag }}"
+          --title "${{ needs.verify.outputs.tag }}"
+          --notes-file release-notes.md
+          dist/*
