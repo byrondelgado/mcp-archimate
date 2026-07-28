@@ -1,9 +1,9 @@
 """Workflow-oriented MCP tools for agent discoverability."""
 
 from collections import Counter
-from pathlib import Path
 from typing import Any
 
+from pyarchimate_mcp_server import filesystem
 from pyarchimate_mcp_server.exceptions import ArchiMateMCPError
 from pyarchimate_mcp_server.mcp_app import (
     DESTRUCTIVE_TOOL,
@@ -137,7 +137,9 @@ def _inspect_active_model_data(
 
     if include_semantic_validation:
         data["semantic_validation"] = _compact_issue_summary(
-            model_manager.validate_semantics(),
+            # This builds its own sample-based summary, so it needs the
+            # per-issue dicts rather than the grouped default.
+            model_manager.validate_semantics(detail="full"),
             limit,
         )
 
@@ -194,7 +196,9 @@ async def get_usage_guide() -> dict[str, Any]:
                 (
                     "Set a viewpoint when creating views (create_view "
                     "viewpoint=...): layered for mixed-layer overviews, "
-                    "capability for capability maps."
+                    "capability for capability maps. Take the exact value "
+                    "from list_supported_types (data.viewpoints) — viewpoint "
+                    "names are not guessable from their English names."
                 ),
                 "After edits, call validate_model and validate_semantics.",
             ],
@@ -351,7 +355,14 @@ async def load_model_from_file(
     if not isinstance(path, str) or not path.strip():
         return error_response("File path must be a non-empty string.", "INVALID_PATH")
 
-    model_path = Path(path).expanduser()
+    try:
+        # Boundary first: a path outside the allowed roots must be
+        # refused before this reports whether a file is there, so the
+        # tool cannot be used to probe for files it may not read.
+        model_path = filesystem.resolve_read_path(path)
+    except ArchiMateMCPError as exc:
+        return error_response(str(exc), exc.code, exc.details)
+
     if not model_path.is_file():
         return error_response(f"File not found: {path}", "FILE_NOT_FOUND")
 
@@ -373,7 +384,7 @@ async def load_model_from_file(
             )
         return success_response(data, "Model loaded.")
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
     except OSError as exc:
         return error_response(str(exc), "FILE_READ_ERROR")
 
@@ -416,4 +427,4 @@ async def inspect_active_model(
             "Active model inspected.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)

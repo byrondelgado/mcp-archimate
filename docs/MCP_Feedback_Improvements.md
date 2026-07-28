@@ -40,6 +40,26 @@ Date: 11 May 2026
 > `valid_alternatives` / `suggested_repairs` payload that FR3 and FR5 depend
 > on (ARC-035).
 
+> **Update (2026-07-28) — response shapes changed; the checks did not.** A
+> field report driving this tool suite end to end found the *size* of these
+> responses, not their content, to be the dominant practical cost: on a
+> 71-element, 143-relationship model with no views yet, `validate_semantics`
+> returned 214 issues and ~55 KB, because the completeness checks fire once per
+> element and once per relationship and are loudest exactly when they are least
+> actionable. `validate_semantics` therefore defaults to a grouped summary
+> (`detail="full"` restores the per-issue list) — see `decision-017` for the
+> shaping rules, in particular why the summary omits the `issues` key entirely
+> rather than truncating it. No check was added, removed or reweighted.
+>
+> The same report found FR7's report block uninterpretable on its own:
+> `build_quality_report(include_togaf=true)` returned a finding count with no
+> findings and a score with no scale, so a caller could not tell "this
+> checklist does not apply to your model" from "your model has seven real
+> problems". The block now carries `advisory_findings`, `max_score`,
+> `hard_failures_count` and `compliance_claim` — all already computed. This is
+> a reporting fix, not scope growth: `decision-015` still freezes the checklist
+> and `compliance_claim: false` remains load-bearing (ARC-058, ARC-059).
+
 
 # PRD: ArchiMate MCP Model Quality, Validation, and Agent Guidance
 

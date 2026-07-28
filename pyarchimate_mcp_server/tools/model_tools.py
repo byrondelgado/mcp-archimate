@@ -60,7 +60,7 @@ async def create_empty_model(
             "Model created.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=IDEMPOTENT_TOOL)
@@ -128,7 +128,7 @@ async def update_model(updates: dict[str, Any]) -> dict[str, Any]:
         )
         return success_response({"model_info": model_info}, "Model updated.")
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=DESTRUCTIVE_TOOL)
@@ -171,7 +171,7 @@ async def load_model_from_content(
             "Model loaded.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=IDEMPOTENT_TOOL)
@@ -245,7 +245,7 @@ async def export_model_content(  # noqa: PLR0913
             data["quality_report"] = model_manager.build_quality_report()
         return success_response(data, "Model exported.")
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=IDEMPOTENT_TOOL)
@@ -309,7 +309,7 @@ async def export_model_to_file(  # noqa: PLR0913
         )
         return success_response(result, "Model exported to file.")
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=DESTRUCTIVE_TOOL)
@@ -399,7 +399,7 @@ async def create_model_from_spec(
         )
         return success_response(result, "Model created from spec.")
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=READ_ONLY_TOOL)
@@ -408,7 +408,29 @@ async def build_quality_report(
     include_togaf: bool = False,
     include_quality_assurance_views: bool = False,
 ) -> dict[str, Any]:
-    """Build a structured visual, semantic, coverage, and optional TOGAF report."""
+    """Build a structured visual, semantic, coverage, and optional TOGAF report.
+
+    Aggregate counts throughout — this is the tool to poll during a
+    build without paying for full issue lists.
+
+    Args:
+        include_togaf: Add `data.togaf_readiness`. Advisory only; see
+            `assess_togaf_readiness` for the scoring scale and the
+            standing `compliance_claim: false` disclaimer.
+        include_quality_assurance_views: Count QA-marked views as
+            stakeholder-facing in the TOGAF checks.
+
+    Returns:
+        Success envelope with `data.visual_validation`,
+        `data.semantic_validation` (`is_valid`, `issues_count`,
+        `issue_counts`), and `data.coverage`. With `include_togaf`,
+        `data.togaf_readiness` carries `status`, `score`, `max_score`,
+        `advisory_findings`, `advisory_findings_count`,
+        `hard_failures_count`, and `compliance_claim`.
+
+    Errors:
+        `ModelNotFoundError` if no model is active.
+    """
     try:
         return success_response(
             _model_manager().build_quality_report(
@@ -418,7 +440,7 @@ async def build_quality_report(
             "Quality report built.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=READ_ONLY_TOOL)
@@ -427,7 +449,29 @@ async def assess_togaf_readiness(
     include_quality_assurance_views: bool = False,
     include_hard_validation: bool = True,
 ) -> dict[str, Any]:
-    """Return advisory TOGAF-oriented readiness findings."""
+    """Return advisory TOGAF-oriented readiness findings.
+
+    Advisory only. `data.compliance_claim` is always `false`: this is a
+    prompt for your own review, not a conformance result, and the
+    checklist is deliberately fixed.
+
+    Scoring: seven checks, one point lost per finding, so
+    `data.score` runs 0-7 against `data.max_score`. `data.status` is
+    `ready` when nothing fired, `partial` at a score of 3 or more, and
+    `limited` below that — so `limited` is the floor, and a model with
+    no Motivation or Strategy content scores 0 legitimately rather than
+    because something went wrong.
+
+    Returns:
+        Success envelope with `data.status`, `data.score`,
+        `data.max_score`, `data.advisory_findings` (each with `code`,
+        `severity`, `message`), `data.advisory_findings_count`,
+        `data.hard_failures`, `data.hard_failures_count`, and
+        `data.compliance_claim`.
+
+    Errors:
+        `ModelNotFoundError` if no model is active.
+    """
     try:
         return success_response(
             _model_manager().assess_togaf_readiness(
@@ -437,7 +481,7 @@ async def assess_togaf_readiness(
             "TOGAF readiness assessed.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=READ_ONLY_TOOL)
@@ -457,7 +501,7 @@ async def export_elements_to_csv() -> dict[str, Any]:
         csv_data = _model_manager().export_elements_to_csv()
         return success_response({"csv_data": csv_data}, "Elements exported.")
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=READ_ONLY_TOOL)
@@ -478,7 +522,7 @@ async def export_relationships_to_csv() -> dict[str, Any]:
         csv_data = _model_manager().export_relationships_to_csv()
         return success_response({"csv_data": csv_data}, "Relationships exported.")
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=READ_ONLY_TOOL)
@@ -505,31 +549,50 @@ async def validate_model() -> dict[str, Any]:
     try:
         return success_response(_model_manager().validate_model(), "Model validated.")
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=READ_ONLY_TOOL)
-async def validate_semantics() -> dict[str, Any]:
+async def validate_semantics(detail: str = "summary") -> dict[str, Any]:
     """Run ArchiMate semantic checks beyond visual reference validation.
 
     Checks include invalid relationship combinations, missing node
     references, duplicate element names within the same folder/type,
     elements not placed in any view, and orphan service/data elements.
 
+    Args:
+        detail: `summary` (default) or `full`. The completeness checks
+            fire once per element and once per relationship, so a
+            mid-build model with no views yet produces one issue per
+            concept — 214 issues, ~55 KB, on a 71-element model — of
+            which the repeated `code`, `severity` and `message` strings
+            are most of the weight. Ask for `full` only when you need
+            to read individual issue dicts.
+
     Returns:
-        Success envelope with `data.is_valid` (bool), `data.issues`
-        (list of issue dicts), and `data.issues_count`.
+        Success envelope with `data.is_valid` (bool),
+        `data.issues_count`, `data.issue_counts`, and `data.detail`.
+
+        Under `summary`: `data.issues_by_code` maps each code to
+        `{count, severity, ids}`, and `data.errors` carries the
+        error-severity issues in full, so `is_valid: false` always
+        arrives with its reason. There is deliberately no `data.issues`
+        key — read `full` if you want that list.
+
+        Under `full`: `data.issues`, one dict per issue.
 
     Errors:
         `ModelNotFoundError` if no model is active.
+        `ModelOperationError` for an unknown `detail` level, with close
+        matches in `error.details.suggestions`.
     """
     try:
         return success_response(
-            _model_manager().validate_semantics(),
+            _model_manager().validate_semantics(detail=detail),
             "Model semantics validated.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=READ_ONLY_TOOL)
@@ -542,9 +605,12 @@ async def list_supported_types() -> dict[str, Any]:
 
     Returns:
         Success envelope with `data` containing element types grouped by
-        category, relationship types, folder roots, valid `access_type`
-        values, valid `influence_strength` values, supported layout
-        strategies, supported layout engines, and summary counts.
+        category, relationship types, view `viewpoints` (split into
+        `pyarchimate_slugs` and `archi_viewpoint_ids` — both accepted,
+        and they overlap without either containing the other), folder
+        roots, valid `access_type` values, valid `influence_strength`
+        values, supported layout strategies, supported layout engines,
+        and summary counts.
 
     Does not require an active model.
     """
@@ -554,7 +620,7 @@ async def list_supported_types() -> dict[str, Any]:
             "Supported types listed.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=READ_ONLY_TOOL)
@@ -574,7 +640,7 @@ async def summarize_model() -> dict[str, Any]:
     try:
         return success_response(_model_manager().summarize_model(), "Model summarized.")
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=READ_ONLY_TOOL)
@@ -599,7 +665,7 @@ async def summarize_view(view_id: str) -> dict[str, Any]:
             "View summarized.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=READ_ONLY_TOOL)
@@ -616,7 +682,7 @@ async def count_by_type() -> dict[str, Any]:
     try:
         return success_response(_model_manager().count_by_type(), "Types counted.")
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=READ_ONLY_TOOL)
@@ -639,4 +705,4 @@ async def list_orphan_elements() -> dict[str, Any]:
             "Orphan elements listed.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)

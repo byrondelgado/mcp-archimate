@@ -17,9 +17,12 @@ from pyArchimate.enums import Writers
 from pyArchimate.exceptions import ArchimateConceptTypeError, ArchimateRelationshipError
 from pyArchimate.model import Model
 from pyArchimate.relationship import check_valid_relationship
-from pyArchimate.viewpoint_registry import STANDARD_VIEWPOINTS
+from pyArchimate.viewpoint_registry import (
+    STANDARD_VIEWPOINTS,
+    validate_viewpoint_slug,
+)
 
-from pyarchimate_mcp_server import layout
+from pyarchimate_mcp_server import filesystem, layout
 from pyarchimate_mcp_server.constants import (
     ARCHIMATE_ELEMENT_TYPES,
     ARCHIMATE_RELATIONSHIP_TYPES,
@@ -92,6 +95,36 @@ PARALLEL_LABEL_ROUTE_GAP = 44
 TOGAF_PARTIAL_SCORE_THRESHOLD = 3
 SUPPORTED_LAYOUT_STRATEGIES = {"grid", "layered", "layered_by_type"}
 SUPPORTED_LAYOUT_ENGINES = {"internal", "pyarchimate"}
+SUPPORTED_DETAIL_LEVELS = {"full", "summary"}
+
+# Every pyArchimate namespace a client-supplied id can land in, paired
+# with the concept kind that owns it. These are five separate dicts
+# upstream, but one id space in the exported XML — see
+# `_require_unused_concept_id`. Order fixes which kind a collision
+# reports when a model already contains cross-kind duplicates from an
+# imported file.
+CONCEPT_ID_NAMESPACES = (
+    ("elems_dict", "element"),
+    ("rels_dict", "relationship"),
+    ("views_dict", "view"),
+    ("nodes_dict", "node"),
+    ("conns_dict", "connection"),
+)
+
+# The field that identifies what a semantic issue is *about*, in
+# priority order. Used to group a summary by code without repeating the
+# code, severity and message string once per issue. Ordered because
+# several issue shapes carry more than one of these (a relationship
+# issue also carries source and target element ids) and the first match
+# is the subject.
+SEMANTIC_ISSUE_IDENTITY_KEYS = (
+    "element_ids",
+    "element_id",
+    "relationship_id",
+    "junction_element_id",
+    "child_node_id",
+    "view_id",
+)
 SUPPORTED_SEMANTIC_VALIDATION_MODES = {"off", "warn", "strict"}
 SUPPORTED_QUALITY_GATES = {"off", "warn", "strict"}
 QA_VIEW_PROPERTY_KEY = "is_quality_assurance_view"
@@ -177,6 +210,29 @@ ARCHI_VIEWPOINT_IDS = frozenset(
         "value_stream",
     }
 )
+
+
+def viewpoint_catalogs() -> dict[str, list[str]]:
+    """Return the two namespaces a `viewpoint` value may come from.
+
+    Sole source for both the `list_supported_types` catalog and the
+    `error.details` of a rejected viewpoint, so what the server
+    advertises and what it accepts cannot drift apart. Derived at call
+    time: the slug list is version-specific to the running pyArchimate.
+
+    The two namespaces overlap (`capability`, `migration`,
+    `organization`, `physical`, `stakeholder`, `strategy`,
+    `technology`) without either containing the other, which is why
+    both have to be published rather than merged.
+    """
+    return {
+        "pyarchimate_slugs": sorted(
+            viewpoint_def.id for viewpoint_def in STANDARD_VIEWPOINTS
+        ),
+        "archi_viewpoint_ids": sorted(ARCHI_VIEWPOINT_IDS),
+    }
+
+
 ARCHI_FOLDER_ROOT_BY_CATEGORY = {
     "Strategy": "/Strategy",
     "Business": "/Business",
@@ -506,11 +562,12 @@ class ArchimateModelManager:
 
     @staticmethod
     def _resolve_output_path(path: str) -> Path:
-        """Expand `~` and resolve a relative output path against the CWD."""
-        output_path = Path(path).expanduser()
-        if not output_path.is_absolute():
-            output_path = Path.cwd() / output_path
-        return output_path
+        """Resolve an output path and refuse one outside the allowed roots.
+
+        Every write this server performs goes through here. See
+        `filesystem.resolve_write_path` for the boundary itself.
+        """
+        return filesystem.resolve_write_path(path)
 
     def get_model_info(self) -> dict[str, Any]:
         """Return metadata about the active model."""
@@ -692,10 +749,21 @@ class ArchimateModelManager:
                 include_quality_assurance_views=include_quality_assurance_views,
                 include_hard_validation=True,
             )
+            # Carry the findings and the scale, not just the tallies. A
+            # bare {"status": "limited", "score": 0, "count": 7} is not
+            # interpretable: it cannot distinguish "this assessment
+            # does not apply to your model" from "your model has seven
+            # real problems", and 0 out of an unstated maximum says
+            # nothing. Everything here is already computed, and the
+            # whole report is under 3 KB.
             report["togaf_readiness"] = {
                 "status": togaf["status"],
                 "score": togaf["score"],
+                "max_score": togaf["max_score"],
+                "advisory_findings": togaf["advisory_findings"],
                 "advisory_findings_count": togaf["advisory_findings_count"],
+                "hard_failures_count": togaf["hard_failures_count"],
+                "compliance_claim": togaf["compliance_claim"],
             }
         return report
 
@@ -774,7 +842,7 @@ class ArchimateModelManager:
         if include_hard_validation:
             hard_failures = [
                 issue
-                for issue in self.validate_semantics()["issues"]
+                for issue in self.validate_semantics(detail="full")["issues"]
                 if issue.get("severity", "error") == "error"
             ]
 
@@ -853,9 +921,7 @@ class ArchimateModelManager:
         model = self._require_model()
         if not self.is_valid_element_type(element_type):
             raise self._invalid_element_type_error(element_type)
-        if element_id is not None and element_id in model.elems_dict:
-            msg = f"Element with ID '{element_id}' already exists."
-            raise ModelOperationError(msg)
+        self._require_unused_concept_id(model, element_id, "element")
 
         element = model.add(
             concept_type=element_type,
@@ -992,9 +1058,7 @@ class ArchimateModelManager:
             access_type=access_type,
             semantic_validation=semantic_validation,
         )
-        if relationship_id is not None and relationship_id in model.rels_dict:
-            msg = f"Relationship with ID '{relationship_id}' already exists."
-            raise ModelOperationError(msg)
+        self._require_unused_concept_id(model, relationship_id, "relationship")
         try:
             relationship = model.add_relationship(
                 rel_type=relationship_type,
@@ -1145,9 +1209,8 @@ class ArchimateModelManager:
     ) -> PyArchimateView:
         """Create a new view in the active model."""
         model = self._require_model()
-        if view_id is not None and view_id in model.views_dict:
-            msg = f"View with ID '{view_id}' already exists."
-            raise ModelOperationError(msg)
+        self._require_unused_concept_id(model, view_id, "view")
+        self._require_valid_viewpoint(properties)
         view = model.add(
             concept_type="View",
             name=view_name,
@@ -1182,6 +1245,7 @@ class ArchimateModelManager:
         view = self.get_view_by_id(view_id)
         if view is None:
             return False
+        self._require_valid_viewpoint(properties)
 
         if name is not None:
             view.name = name
@@ -1219,9 +1283,7 @@ class ArchimateModelManager:
         if element is None:
             msg = f"Element with ID '{element_id}' not found."
             raise ElementNotFoundError(msg)
-        if node_id is not None and node_id in model.nodes_dict:
-            msg = f"Node with ID '{node_id}' already exists."
-            raise ModelOperationError(msg)
+        self._require_unused_concept_id(model, node_id, "node")
 
         x, y = self._next_free_position(
             view,
@@ -1264,9 +1326,7 @@ class ArchimateModelManager:
         if not isinstance(text, str) or not text.strip():
             msg = "Note text must be a non-empty string."
             raise ModelOperationError(msg)
-        if note_id is not None and note_id in model.nodes_dict:
-            msg = f"Node with ID '{note_id}' already exists."
-            raise ModelOperationError(msg)
+        self._require_unused_concept_id(model, note_id, "node")
 
         target_nodes = self._resolve_note_connection_targets(
             view,
@@ -1348,9 +1408,7 @@ class ArchimateModelManager:
         if relationship is None:
             msg = f"Relationship with ID '{relationship_id}' not found."
             raise RelationshipNotFoundError(msg)
-        if connection_id is not None and connection_id in model.conns_dict:
-            msg = f"Connection with ID '{connection_id}' already exists."
-            raise ModelOperationError(msg)
+        self._require_unused_concept_id(model, connection_id, "connection")
 
         view_nodes = self._view_nodes_recursive(view)
         source_node = next(
@@ -1527,8 +1585,18 @@ class ArchimateModelManager:
         view_id: str,
         *,
         rollback_on_error: bool = True,
+        detail: str = "summary",
     ) -> dict[str, Any]:
-        """Add connections for all relationships whose endpoints are visible."""
+        """Add connections for all relationships whose endpoints are visible.
+
+        `detail="summary"` (the default) reports the skips by count
+        only. Every relationship in the model that is not drawable here
+        is skipped, so on a multi-view model the id list is nearly the
+        whole relationship set — 112 ids on the first view of a
+        143-relationship model — and every one of those skips is
+        expected.
+        """
+        detail_level = self.normalize_detail_level(detail)
         self._require_model()
         view = self.get_view_by_id(view_id)
         if view is None:
@@ -1556,12 +1624,15 @@ class ArchimateModelManager:
                     self.add_connection_to_view(view_id, relationship.uuid),
                 )
                 existing_relationship_ids.add(relationship.uuid)
-            return {
+            result = {
+                "detail": detail_level,
                 "connection_ids": [connection.uuid for connection in added_connections],
                 "added_count": len(added_connections),
-                "skipped_relationship_ids": skipped_relationship_ids,
                 "skipped_count": len(skipped_relationship_ids),
             }
+            if detail_level == "full":
+                result["skipped_relationship_ids"] = skipped_relationship_ids
+            return result
 
         return self._run_with_rollback(operation, rollback_on_error=rollback_on_error)
 
@@ -1913,6 +1984,10 @@ class ArchimateModelManager:
             # No layer bands: upstream's own layer buckets disagree with
             # the MCP band labels, so band members come out
             # non-contiguous and the band rectangles interleave.
+            band_outcome = {
+                "created": 0,
+                "reason": layout.LAYER_BAND_SKIP_ENGINE,
+            }
         else:
             nodes = layout.placeable_nodes(view.nodes)
             x_gap, y_gap = layout.label_aware_gaps(
@@ -1943,8 +2018,18 @@ class ArchimateModelManager:
                 )
             # Re-pin group children to their group's final position.
             layout.layout_group_children_for_view(view)
-            if layer_bands and normalized_strategy == "layered_by_type":
-                layout.add_layer_bands(view)
+            if not layer_bands:
+                band_outcome = {
+                    "created": 0,
+                    "reason": layout.LAYER_BAND_SKIP_NOT_REQUESTED,
+                }
+            elif normalized_strategy != "layered_by_type":
+                band_outcome = {
+                    "created": 0,
+                    "reason": layout.LAYER_BAND_SKIP_STRATEGY,
+                }
+            else:
+                band_outcome = layout.add_layer_bands(view)
 
         # Restore before routing, so the obstacle map sees notes where
         # they will actually be drawn rather than where a placement pass
@@ -1955,7 +2040,10 @@ class ArchimateModelManager:
         # consumes only final node geometry, and it clears bendpoints
         # before re-routing, so placement can never strand a waypoint.
         self._route_or_simplify_connections(view)
-        return self.map_view_to_detail(view)
+        detail = self.map_view_to_detail(view)
+        detail.layer_bands_created = band_outcome["created"]
+        detail.layer_bands_reason = band_outcome["reason"]
+        return detail
 
     def auto_layout_all_views(
         self,
@@ -2114,6 +2202,7 @@ class ArchimateModelManager:
                 for category, types in sorted(element_types_by_category.items())
             },
             "relationship_types": ARCHIMATE_RELATIONSHIP_TYPES,
+            "viewpoints": viewpoint_catalogs(),
             "folder_roots": list(ARCHI_ROOT_FOLDERS),
             "folder_aliases": dict(sorted(ARCHI_ROOT_ALIASES.items())),
             "access_types": sorted(SUPPORTED_ACCESS_TYPES),
@@ -2263,8 +2352,20 @@ class ArchimateModelManager:
             "fully_orphaned_count": len(fully_orphaned),
         }
 
-    def validate_semantics(self) -> dict[str, Any]:
-        """Run semantic checks beyond pyArchimate visual reference validation."""
+    def validate_semantics(self, *, detail: str = "summary") -> dict[str, Any]:
+        """Run semantic checks beyond pyArchimate visual reference validation.
+
+        `detail="summary"` (the default) groups the issues by code
+        instead of returning one dict per issue. The completeness
+        checks fire once per element and once per relationship, so a
+        mid-build model of 71 elements and 143 relationships produced
+        214 near-identical issue dicts — ~55 KB, of which the repeated
+        `code`, `severity` and `message` strings were most of the
+        weight. Error-severity issues are never grouped away: they are
+        returned in full under `errors`, so `is_valid=false` always
+        arrives with its reason attached.
+        """
+        detail_level = self.normalize_detail_level(detail)
         model = self._require_model()
         issues = []
 
@@ -2368,14 +2469,24 @@ class ArchimateModelManager:
             or element["type"] in {"DataObject", "BusinessObject"}
         )
 
-        return {
-            "is_valid": not any(
-                issue.get("severity", "error") == "error" for issue in issues
-            ),
-            "issues": issues,
+        errors = [
+            issue for issue in issues if issue.get("severity", "error") == "error"
+        ]
+        result: dict[str, Any] = {
+            "detail": detail_level,
+            "is_valid": not errors,
             "issues_count": len(issues),
             "issue_counts": self._semantic_issue_counts(issues),
         }
+        if detail_level == "full":
+            result["issues"] = issues
+            return result
+        # No "issues" key in the summary on purpose: a caller that
+        # still reads it must break loudly rather than silently read a
+        # shorter list than it believes it asked for.
+        result["issues_by_code"] = self._semantic_issues_by_code(issues)
+        result["errors"] = errors
+        return result
 
     def repair_semantic_issues(  # noqa: PLR0913
         self,
@@ -2396,7 +2507,7 @@ class ArchimateModelManager:
         def operation() -> dict[str, Any]:
             applied = []
             skipped = []
-            issues = self.validate_semantics()["issues"]
+            issues = self.validate_semantics(detail="full")["issues"]
             repairs = [
                 (issue, repair)
                 for issue in issues
@@ -2585,6 +2696,46 @@ class ArchimateModelManager:
             for junction_id, relationship_types in types_by_junction.items()
             if len(relationship_types) > 1
         ]
+
+    def _semantic_issue_subject_ids(self, issue: dict[str, Any]) -> list[str]:
+        """Return the ids a single issue is about, most specific first."""
+        for key in SEMANTIC_ISSUE_IDENTITY_KEYS:
+            value = issue.get(key)
+            if isinstance(value, list):
+                return [str(item) for item in value]
+            if value:
+                return [str(value)]
+        # A new issue code that carries none of the known subject keys
+        # still contributes its ids rather than silently reporting none.
+        return [
+            str(value) for key, value in issue.items() if key.endswith("_id") and value
+        ]
+
+    def _semantic_issues_by_code(
+        self,
+        issues: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """Group issues by code, keeping the ids and dropping the prose.
+
+        The ids are what a caller acts on; `code`, `severity` and
+        `message` are identical across a group and only need saying
+        once.
+        """
+        grouped: dict[str, dict[str, Any]] = {}
+        for issue in issues:
+            code = str(issue.get("code", "UNKNOWN"))
+            severity = str(issue.get("severity", "error"))
+            group = grouped.setdefault(
+                code,
+                {"count": 0, "severity": severity, "ids": []},
+            )
+            group["count"] += 1
+            # A mixed-severity group reports the worse of the two, so a
+            # summary can never read as less serious than the issues.
+            if severity == "error":
+                group["severity"] = "error"
+            group["ids"].extend(self._semantic_issue_subject_ids(issue))
+        return dict(sorted(grouped.items()))
 
     def _semantic_issue_counts(
         self,
@@ -3365,6 +3516,26 @@ class ArchimateModelManager:
             raise error
         return normalized_strategy
 
+    def normalize_detail_level(self, detail: str) -> str:
+        """Validate a `detail` level.
+
+        Public because `auto_layout_view` is shaped in the tools layer
+        — the manager returns a `ViewDetail` there, and its internal
+        callers need that object rather than a response dict.
+        """
+        normalized_detail = str(detail).lower()
+        if normalized_detail in SUPPORTED_DETAIL_LEVELS:
+            return normalized_detail
+        catalog = sorted(SUPPORTED_DETAIL_LEVELS)
+        suggestions = self._type_suggestions(str(detail), catalog)
+        msg = (
+            f"Unsupported detail level: {detail}. "
+            f"Supported levels: {', '.join(catalog)}."
+        )
+        if suggestions:
+            msg += f" Did you mean: {', '.join(suggestions)}?"
+        raise ModelOperationError(msg, {"suggestions": suggestions})
+
     def _normalize_layout_engine(self, layout_engine: str) -> str:
         normalized_engine = layout_engine.lower()
         if normalized_engine not in SUPPORTED_LAYOUT_ENGINES:
@@ -3451,33 +3622,104 @@ class ArchimateModelManager:
         for key, value in properties.items():
             entity.prop(str(key), str(value))
 
-    def _apply_view_metadata(self, view: Any) -> None:
-        viewpoint = view.prop("viewpoint")
-        if viewpoint and hasattr(view, "set_primary_viewpoint"):
-            try:
-                view.set_primary_viewpoint(str(viewpoint))
-            except ValueError as exc:
-                # Canonical Archi viewpoint ids are also accepted; they are
-                # carried by the "viewpoint" property and written as the
-                # native viewpoint attribute during Archi export.
-                if str(viewpoint) in ARCHI_VIEWPOINT_IDS:
-                    return
-                valid_slugs = sorted(
-                    viewpoint_def.id for viewpoint_def in STANDARD_VIEWPOINTS
-                )
-                valid_ids = sorted(ARCHI_VIEWPOINT_IDS)
-                msg = (
-                    f"Invalid viewpoint {viewpoint!r}. Accepted values: "
-                    f"pyArchimate slugs ({', '.join(valid_slugs)}) or Archi "
-                    f"viewpoint ids ({', '.join(valid_ids)})."
-                )
+    def _require_unused_concept_id(
+        self,
+        model: Model,
+        concept_id: str | None,
+        kind: str,
+    ) -> None:
+        """Reject a client-supplied id already used anywhere in the model.
+
+        pyArchimate keys concepts in five separate dicts, so checking
+        only the matching one let the same id belong to an element, a
+        relationship, a view, a node and a connection at once. Both
+        writers then emitted that identifier twice in one document: in
+        the exchange format `identifier` is the `xs:ID` that
+        `relationshipRef` points at as an `xs:IDREF`, so a duplicate is
+        the same class of defect `_sanitize_exchange_output` already
+        repairs — an identifier declared twice rather than referenced
+        but never declared — and in the native format two concepts
+        sharing an id let an `archimateElement` reference resolve to the
+        wrong one. Neither round trip complains, because pyArchimate
+        keys by the same separate dicts on the way back in.
+        """
+        if concept_id is None:
+            return
+        for namespace, existing_kind in CONCEPT_ID_NAMESPACES:
+            if concept_id in getattr(model, namespace, {}):
+                if existing_kind == kind:
+                    # Unchanged wording: this message is already clear,
+                    # and callers hit it far more often than the
+                    # cross-kind case.
+                    msg = f"{kind.capitalize()} with ID '{concept_id}' already exists."
+                else:
+                    # "an existing <kind>" reads correctly for all five
+                    # kinds; "a {kind}" would produce "a element".
+                    msg = (
+                        f"ID '{concept_id}' already identifies an existing "
+                        f"{existing_kind} in this model. IDs must be unique "
+                        f"across the entire model, not per concept type."
+                    )
                 raise ModelOperationError(
                     msg,
                     {
-                        "supported_viewpoint_slugs": valid_slugs,
-                        "supported_archi_viewpoint_ids": valid_ids,
+                        "concept_id": concept_id,
+                        "requested_concept_kind": kind,
+                        "existing_concept_kind": existing_kind,
                     },
-                ) from exc
+                )
+
+    def _require_valid_viewpoint(self, properties: dict[str, str] | None) -> None:
+        """Reject an unknown viewpoint BEFORE any view is created or changed.
+
+        This must stay ahead of every mutation. When the check lived in
+        `_apply_view_metadata` — after `model.add()` — a rejected
+        viewpoint still left the view behind, so the natural agent
+        recovery (retry with a corrected viewpoint) hit a duplicate-id
+        error on a view the caller did not believe existed, and the
+        rejected value stayed on the view as a property.
+        """
+        viewpoint = (properties or {}).get("viewpoint")
+        if not viewpoint:
+            return
+        try:
+            validate_viewpoint_slug(str(viewpoint))
+        except ValueError as exc:
+            # Canonical Archi viewpoint ids are also accepted; they are
+            # carried by the "viewpoint" property and written as the
+            # native viewpoint attribute during Archi export.
+            if str(viewpoint) in ARCHI_VIEWPOINT_IDS:
+                return
+            catalogs = viewpoint_catalogs()
+            valid_slugs = catalogs["pyarchimate_slugs"]
+            valid_ids = catalogs["archi_viewpoint_ids"]
+            msg = (
+                f"Invalid viewpoint {viewpoint!r}. Accepted values: "
+                f"pyArchimate slugs ({', '.join(valid_slugs)}) or Archi "
+                f"viewpoint ids ({', '.join(valid_ids)}). The same catalog "
+                f"is available up front from `list_supported_types` under "
+                f"`viewpoints`."
+            )
+            raise ModelOperationError(
+                msg,
+                {
+                    "supported_viewpoint_slugs": valid_slugs,
+                    "supported_archi_viewpoint_ids": valid_ids,
+                },
+            ) from exc
+
+    def _apply_view_metadata(self, view: Any) -> None:
+        """Mirror the "viewpoint" property onto pyArchimate's own field.
+
+        Deliberately never raises. `_require_valid_viewpoint` already
+        gates the tool paths, and a view loaded from a foreign file may
+        carry a slug this pyArchimate build does not know — the load
+        path suppresses that too rather than failing the load.
+        """
+        viewpoint = view.prop("viewpoint")
+        if viewpoint and hasattr(view, "set_primary_viewpoint"):
+            with contextlib.suppress(ValueError):
+                view.set_primary_viewpoint(str(viewpoint))
 
     def _view_metadata(self, view: Any) -> dict[str, str | bool | list[str]]:
         properties = dict(getattr(view, "props", {}))

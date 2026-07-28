@@ -53,7 +53,13 @@ async def add_relationship(  # noqa: PLR0913
         influence_strength: Required only for `Influence` relationships.
             One of `+`, `++`, `-`, `--`, or `0`-`10`.
         relationship_id: Optional stable relationship ID. When omitted a
-            UUID is generated.
+            UUID is generated. Must be unique across the
+            *entire* active model — not just within this call, this
+            batch, or this concept type. An id already used by any
+            element, relationship, view, node or connection is
+            rejected. When generating ids across several batches,
+            namespace them (`bp-`, `ac-`, `tech-`) so batches cannot
+            collide.
 
     Returns:
         Success envelope with `data` shaped like a `RelationshipDetail`:
@@ -102,7 +108,7 @@ async def add_relationship(  # noqa: PLR0913
                 )
         return success_response(detail, message)
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=ADDITIVE_TOOL)
@@ -118,6 +124,12 @@ async def add_relationships(
     Short and long field names are both accepted (`type` or
     `relationship_type`, `source` or `source_id`, `target` or
     `target_id`, `id` or `relationship_id`).
+
+    IDs are unique across the **entire active model**, not per call,
+    per batch, or per concept type. Splitting a build across several
+    batches does not give each batch its own id space, so namespace
+    generated ids (`bp-`, `ac-`, `tech-`) rather than restarting the
+    same naming pattern in each one.
 
     Relationship item shape:
         ```
@@ -191,7 +203,7 @@ async def add_relationships(
             message,
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=IDEMPOTENT_TOOL)
@@ -246,7 +258,7 @@ async def update_relationship(
             "Relationship updated.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=DESTRUCTIVE_TOOL)
@@ -274,7 +286,7 @@ async def delete_relationship(relationship_id: str) -> dict[str, Any]:
             )
         return success_response({"deleted": True}, "Relationship deleted.")
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=READ_ONLY_TOOL)
@@ -289,7 +301,7 @@ async def get_relationship_compatibility(
             "Relationship compatibility returned.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=READ_ONLY_TOOL)
@@ -316,7 +328,7 @@ async def recommend_relationship(  # noqa: PLR0913
             "Relationship recommendations returned.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=DESTRUCTIVE_TOOL)
@@ -343,4 +355,4 @@ async def repair_semantic_issues(  # noqa: PLR0913
             "Semantic repairs applied.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)

@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -88,3 +90,54 @@ class ViewDetail(BaseModel):
     primary_viewpoint: str | None = None
     nodes: list[ViewNode]
     connections: list[ViewConnection]
+    layer_bands_created: int | None = Field(
+        None,
+        description=(
+            "Layer bands this layout produced. Set by auto_layout_view "
+            "only; None means no layout ran in this call."
+        ),
+    )
+    layer_bands_reason: str | None = Field(
+        None,
+        description=(
+            "Why no layer bands were produced: single_layer_view, "
+            "coverage_view, not_requested, strategy_does_not_use_bands, "
+            "or engine_does_not_support_bands. None when bands were "
+            "created or no layout ran."
+        ),
+    )
+
+    def summary(self) -> dict[str, Any]:
+        """Return the view without its per-node and per-connection lists.
+
+        A laid-out view of 34 nodes and 60 connections is several
+        thousand tokens of geometry whose usual next action is "lay out
+        the next view" or "export". What a caller does still need is
+        how much canvas the layout consumed, so a note can be placed in
+        free space afterwards — hence `bounds` rather than every
+        coordinate.
+        """
+        bounds = None
+        if self.nodes:
+            left = min(node.x for node in self.nodes)
+            top = min(node.y for node in self.nodes)
+            bounds = {
+                "x": left,
+                "y": top,
+                "width": max(node.x + node.width for node in self.nodes) - left,
+                "height": max(node.y + node.height for node in self.nodes) - top,
+            }
+        return {
+            "detail": "summary",
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "properties": self.properties,
+            "metadata": self.metadata,
+            "primary_viewpoint": self.primary_viewpoint,
+            "node_count": len(self.nodes),
+            "connection_count": len(self.connections),
+            "bounds": bounds,
+            "layer_bands_created": self.layer_bands_created,
+            "layer_bands_reason": self.layer_bands_reason,
+        }

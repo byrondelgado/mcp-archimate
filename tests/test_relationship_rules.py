@@ -159,7 +159,7 @@ def test_node_assignment_hosting_repairs_to_serving():
     def combination_issues():
         return [
             issue
-            for issue in manager.validate_semantics()["issues"]
+            for issue in manager.validate_semantics(detail="full")["issues"]
             if issue["code"] == "INVALID_RELATIONSHIP_COMBINATION"
         ]
 

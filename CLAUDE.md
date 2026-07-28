@@ -62,6 +62,7 @@ Tools obtain the manager via `mcp.get_context().request_context.lifespan_context
 - The note pin/restore pair is a *pair*. `restore_note_positions` is the only thing pinning notes under `pyarchimate` (the `internal` branch is separately protected by `placeable_nodes`), and dropping it fails exactly one test while the internal engine keeps passing — this already happened once, as dead code that captured the positions and threw them away. Its capture point is also fixed: after the last reparenting step and before the first placement step. See the Diagram notes section.
 - `remove_layer_bands` must run **before** upstream placement. Bands are top-level Containers far wider than a grid cell; leaving them in guarantees overlaps.
 - Layer bands are never re-added under `pyarchimate`. Upstream's 4-bucket substring layer classifier disagrees with the repo's 6-row ArchiMate band labels, so band members come out non-contiguous, the band rectangles interleave, and `add_layer_bands` also reparents via `node.move(band)`. This is correctness, not style.
+- Both arms produce a band outcome that the epilogue copies onto the returned `ViewDetail` as `layer_bands_created` / `layer_bands_reason`. `add_layer_bands` returns `{"created", "reason"}` rather than `None` for this. Every declining path names itself (`single_layer_view`, `coverage_view`, `not_requested`, `strategy_does_not_use_bands`, `engine_does_not_support_bands`) because the `mcp:layer_bands` view property structurally cannot answer the question: an absent key and a legitimately unbanded single-layer view look identical, and a view that *used* to have bands keeps the property as an empty string after `remove_layer_bands` clears it in the prologue. Compute the outcome from the current call; never read it back from the property.
 
 `"pyarchimate"` delegates placement to upstream `auto_layout` (`layout.layout_nodes_pyarchimate`). It applies no `strategy` (validated, not applied), no layer bands, no lane wrapping, no barycenter alignment and no ArchiMate lane order. Do not sell it as "faster" without qualifying: the placement step is ~3.6x faster, but `auto_layout_view` is dominated by the shared routing epilogue, so below the dense-routing gate the airier placement gives the router more work and the call is *slower* end to end (measured 157.9 ms vs 50.7 ms on 43 nodes / 42 connections; it wins only past the gate, 1.3 ms vs 5.3 ms at 200 nodes). **It has zero collision detection** — `assign_grid_cells` never reads node `w`/`h` — so it is overlap-free only while every node fits `LayoutConfig().grid_size`. One node a pixel over produces overlaps and still reports `success=True, warnings=[]`. `_require_pyarchimate_layout_is_safe` therefore refuses such a view *before* any placement write, using each top-level node's **subtree** bounding box (an imported Archi view can have a child sticking outside its parent) and reading `grid_size` from the dataclass at call time — never hardcode 240 (upstream's own docstring wrongly says 120). Two more rules: upstream swallows every exception into `LayoutResult(success=False)` and never raises, so always check `result.success`; and never run upstream `auto_layout` **after** a routing pass — it preserves waypoints byte-for-byte, so moving nodes underneath them strands every bendpoint in empty canvas.
 
@@ -100,6 +101,31 @@ Three modes: `"off"`, `"warn"`, `"strict"`.
 
 Note also that despite its name, pyArchimate's `checker_rules.yml` is not a rule engine — it is a metadata and ARIS type-map file. There is no unused upstream checker being duplicated.
 
+### Response detail levels
+
+> **Why:** decision-017.
+
+`validate_semantics`, `auto_layout_view` and `connect_visible_relationships` take `detail` (`"summary"` default, `"full"` for the pre-0.8.0 payload), validated by the **public** `normalize_detail_level` — public because `auto_layout_view` is shaped in the tools layer, where the manager returns a `ViewDetail` its internal callers still need.
+
+Two shaping rules are load-bearing:
+
+- **The `validate_semantics` summary has no `issues` key at all** — not a truncated list. A shorter list would let a caller written against `full` silently read fewer issues than it asked for; a missing key fails loudly, which is exactly what five real call sites did when the default changed (`assess_togaf_readiness`, `repair_semantic_issues`, `_compact_issue_summary`, two tests — all corrected to `detail="full"`). Do not add a truncated `issues` back.
+- **Error-severity issues are never grouped away.** `issues_by_code` groups by code; `errors` carries the error-severity issues in full so `is_valid: false` always arrives with its reason. Subject ids come from the ordered `SEMANTIC_ISSUE_IDENTITY_KEYS` tuple, not a blind `*_id` sweep — several issue shapes carry more than one id and only the first is the subject.
+
+`auto_layout_view`'s summary must keep `bounds`: it is what makes the shape usable rather than merely small, since placing a note afterwards needs to know where the free canvas is. There is deliberately no `severity_filter` — the summary already separates errors from grouped warnings.
+
+### Client-supplied ids are unique model-wide, not per namespace
+
+pyArchimate keys concepts in five separate dicts (`elems_dict`, `rels_dict`, `views_dict`, `nodes_dict`, `conns_dict`), but the exported XML has **one** id space. `_require_unused_concept_id` therefore scans all five on every creation path — do not "optimize" it back to checking only the matching dict. Checking one dict let the same id belong to an element, a relationship and a view at once, and both writers then emitted that identifier twice in a single document: an `xs:ID` collision in the exchange format (the same defect class `_sanitize_exchange_output` repairs, in the opposite direction) and an ambiguous `archimateElement` reference in the native one. Neither round trip complains, because pyArchimate reads back through the same separate dicts.
+
+Same-kind collisions keep their original message (`Element with ID 'x' already exists.`); cross-kind ones name the holder and the model-wide rule, with `existing_concept_kind` in `error.details`. `repair_semantic_issues(preserve_relationship_ids=True)` still works because it deletes before recreating — that ordering is now load-bearing and has a test.
+
+### View metadata is validated before the view is touched
+
+`create_view` and `update_view` call `_require_valid_viewpoint(properties)` **before** `model.add()` and before the first field assignment. `_apply_view_metadata` only mirrors the property onto pyArchimate's `primary_viewpoint` and **never raises** — matching the load path, which suppresses unknown slugs so a foreign file cannot fail to load. That is one gate, not two half-gates: when the check lived in `_apply_view_metadata` (after the mutation), a rejected viewpoint still left the view behind carrying the rejected value, and the natural retry hit a duplicate-id error. Do not move validation back after the mutation, and do not make `_apply_view_metadata` raise again.
+
+The accepted values come from `viewpoint_catalogs()`, which `list_supported_types` (`data.viewpoints`) and the rejection message both read, so the advertised catalog cannot drift from the accepted one. Both namespaces are published separately because they overlap without either containing the other.
+
 ### Dependency pins — read before changing any of them
 
 > **Why:** decision-006.
@@ -122,7 +148,7 @@ The manager is written against specific pyArchimate 1.12.x patterns — document
 
 ### The untrusted-input boundary — `_validate_xml_content` runs first, always
 
-> **Why:** `SECURITY.md`; the deferred filesystem boundary is decision D8 in doc-001, tracked as ARC-050.
+> **Why:** `SECURITY.md`; the filesystem boundary was decision D8 in doc-001, deferred out of 0.7.0 and implemented in 0.8.0 by ARC-050.
 
 Users load `.archimate` files they did not author, so the load path is where hostile input reaches this server. `load_model_from_string` calls `_validate_xml_content` **before** anything else touches the content: it rejects any `<!DOCTYPE` or `<!ENTITY` outright (killing XXE and billion-laughs in one step, independently of lxml's defaults), caps size at `MAX_MODEL_CONTENT_BYTES`, parses with `resolve_entities=False, no_network=True, recover=False, huge_tree=False`, and allow-lists the root tag. `load_model_from_file` reads the file and delegates to `load_model_from_string` — **never give a path straight to pyArchimate's `model.read()`**, which would skip all of it.
 
@@ -131,7 +157,18 @@ Two constraints follow, both load-bearing:
 - **`_restore_exchange_note_connectors` re-parses the raw content with a bare `etree.fromstring`, and that is safe *only because* validation already ran.** Moving, skipping or reordering the validation reintroduces XXE. The other bare parses (`_svg_pixel_size`, `_finalize_archi_output`, `_sanitize_exchange_output`) only ever see content this server generated.
 - **The tests in `tests/test_security.py` use payloads with a *valid* ArchiMate root on purpose.** With a junk root the allow-list rejects them first and the tests pass while proving nothing about entity handling. They also assert a canary file's contents never surface, and carry a control test proving the payload still leaks against a permissive parser — so the suite cannot decay into testing nothing. Verified load-bearing by mutation: deleting the DTD check fails four tests, and the external-DTD payload then *loads successfully*.
 
-The filesystem boundary is deliberately **not** enforced yet — the file tools have the launching user's rights, documented in `SECURITY.md` and the README, with enforcement deferred to ARC-050 (decision D8). Do not describe the server as sandboxed.
+### The filesystem boundary — `filesystem.py` gates every path
+
+`filesystem.py` is a leaf module (stdlib + `exceptions` only, never imports `model_manager`) so both the manager and the tools layer can call it. All three file tools go through it: `load_model_from_file` via `resolve_read_path`, and `export_model_to_file` / `render_view_to_svg_file` via the manager's `_resolve_output_path`, which is now a one-line delegation to `resolve_write_path`. Adding a fourth file tool means routing it through here too.
+
+- **`MCP_ARCHIMATE_ALLOWED_READ_ROOTS` / `_WRITE_ROOTS` are read at call time, never cached.** A client may set them after import, and tests change them per case.
+- **Unset defaults to `Path.home()`.** Deny-by-default would break the README quickstarts, which write to `~/Desktop`; unrestricted would leave the protection reachable only by someone who already knew the variables existed. This is a documented default, not a placeholder.
+- **`Path.expanduser().resolve()` is what makes it a real check.** It expands `..` and follows symlinks across the whole path *including a tail that does not exist yet*, so a link inside an allowed root pointing out of it resolves to its true target and fails containment. Roots are resolved too, so a symlinked root still matches. Never replace this with string prefix matching.
+- **A relative allowed-root is rejected (`INVALID_ALLOWED_ROOTS`), not resolved against the CWD.** The boundary must not depend on where the client happened to launch the server.
+- **The read check runs before the existence check** in `load_model_from_file`, so the tool cannot be used to probe for files it may not read. Do not reorder them.
+- **`_validate_xml_content` still runs first on content.** The roots check is about *where*, not *what*; neither substitutes for the other.
+
+This is **not** a sandbox: enforcement is in-process and the server still runs as the launching account. Do not describe it as sandboxed. `tests/conftest.py` widens the roots to the temp directory for the suite, because pytest's `tmp_path` is outside home on macOS — that is a widening, not a bypass, so every file test still exercises the real boundary code.
 
 ### Two export formats — do not confuse them
 
@@ -167,7 +204,7 @@ Retired in 0.7.0 and not to be recreated: `docs/SDD.md`, `docs/IMPLEMENTATION_PL
 
 - `AGENTS.md` is the Codex entrypoint and delegates here; keep this file the single canonical instruction body.
 - Project agent skills live in `.agents/skills/` (canonical location). `.claude/skills` is a relative symlink to it — edit skills only under `.agents/skills/` and never replace the symlink with a real directory.
-- Agent support is deliberately scoped to **Claude Code and Codex only**. Task Master and Windsurf tooling was removed in ARC-040; do not reintroduce it or build on it. **The server needs no API keys or environment variables** — an env file in this repo is always a mistake, and `.gitignore` blocks the whole family.
+- Agent support is deliberately scoped to **Claude Code and Codex only**. Task Master and Windsurf tooling was removed in ARC-040; do not reintroduce it or build on it. **The server needs no API keys or secrets of any kind** — an env file in this repo is always a mistake, and `.gitignore` blocks the whole family. The only environment variables it reads are `MCP_ARCHIMATE_ALLOWED_READ_ROOTS` / `_WRITE_ROOTS` (see the filesystem boundary section); both are optional, neither is a credential.
 - `.codex/config.toml` is a *portable example* for contributors, not a working local config. It must never contain an absolute user-specific path.
 - **Decisions are the one exception to "manage tasks only through the CLI".** `backlog decision create <title> [-s status]` takes only a title and a status — no `--content` flag, no `update` subcommand, no MCP tool — so it scaffolds the frontmatter, id and `## Context` / `## Decision` / `## Consequences` headings, and the body is written into the file. Intended workflow, not a workaround; leave the frontmatter alone. Tasks, documents and milestones all have CLI paths for their content and must use them.
 - Backlog: task prefix `ARC`, config in `.backlog/config.yml`. The board starts at the open work; completed pre-release task files were removed for the public release (ARC-051) after their durable rationale was extracted into `.backlog/decisions/`. **ARC numbers referenced in decisions and code comments are provenance markers, not links** — the task files they name are gone by design. Check the live board with `backlog task list --plain`; manage tasks only through the `backlog` CLI.

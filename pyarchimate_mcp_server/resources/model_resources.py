@@ -54,7 +54,7 @@ async def get_model_content() -> dict[str, Any]:
         content = _model_manager().get_model_content_as_string()
         return success_response({"content": content})
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.resource("pyarchimate://activemodel/validation")
@@ -76,4 +76,4 @@ async def get_model_validation() -> dict[str, Any]:
     try:
         return success_response(_model_manager().validate_model())
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)

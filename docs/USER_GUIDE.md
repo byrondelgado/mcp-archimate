@@ -72,8 +72,9 @@ pipx run mcp-archimate
 pip install mcp-archimate
 ```
 
-Requires Python 3.10 or newer. The server needs no API keys, no environment
-variables and no configuration file.
+Requires Python 3.10 or newer. The server needs no API keys and no configuration
+file. Two optional environment variables confine the file tools — see
+[Security Model](#security-model).
 
 ### From source (contributors)
 
@@ -113,12 +114,34 @@ as `mcp-archimate` with the installed package version.
 Before pointing an agent at this server, know two things. The full picture is in
 [SECURITY.md](../SECURITY.md), and the README carries a summary.
 
-**The server has the filesystem rights of whoever launched it.**
-`load_model_from_file` reads any path you can read; `export_model_to_file` and
-`render_view_to_svg_file` write any path you can write, overwriting without
-prompting. There is no allowed-root restriction. Paths are chosen by the agent,
+**The file tools are confined to allowed roots.** Paths are chosen by the agent,
 so treat a path argument the way you would treat a shell command an agent
-proposed.
+proposed. Two environment variables set the boundary; each takes one or more
+**absolute** paths separated by the platform path separator (`:` on macOS and
+Linux, `;` on Windows), and `~` is expanded.
+
+| Variable | Controls | Default when unset |
+| --- | --- | --- |
+| `MCP_ARCHIMATE_ALLOWED_READ_ROOTS` | `load_model_from_file` | your home directory |
+| `MCP_ARCHIMATE_ALLOWED_WRITE_ROOTS` | `export_model_to_file`, `render_view_to_svg_file` | your home directory |
+
+The home default keeps the workflows in this guide working — they write to
+`~/Desktop` — while putting `/etc`, system locations and other users' files out
+of reach. Every path is expanded and fully resolved before the check, so `..`
+segments and symlinks cannot escape an allowed root.
+
+A path outside the roots returns `PATH_OUTSIDE_ALLOWED_ROOTS`, with
+`error.details.resolved_path`, `error.details.allowed_roots` and
+`error.details.environment_variable` naming what to change. An unusable setting
+(empty, or a relative path) returns `INVALID_ALLOWED_ROOTS` rather than silently
+falling back to the default. For reads the boundary is checked *before* the
+existence check, so an existing file outside the roots is indistinguishable from
+a missing one.
+
+This is not a sandbox: the server still runs as the account that launched it,
+exports still overwrite without prompting inside an allowed root, and the home
+default still exposes things like `~/.ssh`. Narrow the roots to a dedicated
+models directory when that matters.
 
 **Model content is untrusted input.** The loader rejects DTDs and entity
 declarations and parses with external entity resolution disabled, so XXE and
@@ -293,6 +316,20 @@ The server returns generated IDs for models, elements, relationships, views, nod
 1. Call `add_element`.
 2. Save the returned `data.id`.
 3. Use that ID as `source_id`, `target_id`, or `element_id` in later relationship and view calls.
+
+**Supplying your own IDs.** Every creation tool accepts an optional id (`element_id`, `relationship_id`, `view_id`, `node_id`, `note_id`, `connection_id`, or `id` in a batch item), which lets you reference concepts you have not created yet and skip the round trip that reads a generated id back.
+
+**One id space, model-wide.** A supplied id must be unique across the **entire active model** — not per call, not per batch, and not per concept type. An id already held by any element, relationship, view, node or connection is rejected, whichever tool asks for it:
+
+| Situation | Result |
+| --- | --- |
+| Same id twice in one call | rejected |
+| Same id in two different `add_relationships` batches | rejected |
+| Same id for an element and a relationship | rejected — `error.details.existing_concept_kind` names the holder |
+
+The last row matters even though the two concepts live in different parts of the model: both export formats write every concept into one XML document, where the identifier is an `xs:ID` and must be unique. Allowing it produced a file that failed schema validation and let a diagram reference resolve to the wrong concept.
+
+Splitting a build across batches therefore does **not** give each batch its own id space. When generating ids programmatically — one batch per architecture layer, say — namespace them (`bp-`, `ac-`, `tech-`) so the batches cannot collide.
 
 ### Resources Versus Tools
 
@@ -751,11 +788,20 @@ Note for existing users: with the pinned pyArchimate 1.12.x, the underlying orph
 
 Run optional semantic checks beyond visual reference validation. The checks include invalid relationship combinations, missing node references, duplicate element names per element type across the model (matching Archi's Validator), elements not included in any view, and orphan service/data elements.
 
-Parameters: none.
+Parameters:
 
-Returns `data.is_valid`, `data.issues`, and `data.issues_count`.
+| Name | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `detail` | string | no | `"summary"` | `summary` or `full`. See below. |
 
-Errors: `ModelNotFoundError`.
+Returns `data.is_valid`, `data.issues_count`, `data.issue_counts`, and `data.detail` in both shapes.
+
+- **`summary` (default)** adds `data.issues_by_code` — each code mapped to `{count, severity, ids}` — and `data.errors`, the error-severity issues in full. There is deliberately **no `data.issues` key** in this shape, so a caller written against `full` fails loudly instead of silently reading a shorter list.
+- **`full`** adds `data.issues`, one dict per issue.
+
+The completeness checks (`ELEMENT_NOT_IN_ANY_VIEW`, `RELATIONSHIP_NOT_IN_ANY_VIEW`) fire once per element and once per relationship, so they are loudest exactly when they are least actionable: mid-build, before any view exists. A 71-element, 143-relationship model with no views yet produces 214 issues and about 55 KB of `full` response, most of it the same `code`, `severity` and `message` strings repeated. The `summary` of that same result is a few hundred bytes. Error-severity issues are never grouped away, so `is_valid: false` always arrives with its reason in `data.errors`.
+
+Errors: `ModelNotFoundError`, `ModelOperationError` (unknown `detail` level, with close matches in `error.details.suggestions`).
 
 #### `repair_semantic_issues`
 
@@ -787,7 +833,9 @@ Parameters:
 | `include_togaf` | boolean | no | `false` | Append the advisory TOGAF readiness findings. |
 | `include_quality_assurance_views` | boolean | no | `false` | Include QA/coverage views in coverage counts. |
 
-Returns `data.visual_validation`, `data.semantic_validation`, and `data.coverage` (plus `data.togaf_readiness` when requested).
+Returns `data.visual_validation`, `data.semantic_validation`, and `data.coverage`. Aggregate counts throughout, so this is the tool to poll during a build without paying for full issue lists.
+
+With `include_togaf`, `data.togaf_readiness` carries `status`, `score`, `max_score`, `advisory_findings`, `advisory_findings_count`, `hard_failures_count`, and `compliance_claim`. The findings themselves are included so a score of 0 can be read for what it is — see `assess_togaf_readiness` for the scale.
 
 Errors: `ModelNotFoundError`.
 
@@ -804,6 +852,8 @@ Parameters:
 
 Returns `data.advisory_findings`, `data.advisory_findings_count`, `data.hard_failures`, `data.score`, `data.max_score`, `data.status`, and `data.compliance_claim` (always `false`).
 
+**Reading the score.** Seven checks, one point lost per finding, so `score` runs 0–7 against `max_score`. `status` is `ready` when nothing fired, `partial` at a score of 3 or more, and `limited` below that — `limited` is the floor, not the middle. A model with no Motivation or Strategy content scores 0 legitimately: the checklist looks for stakeholders, goals, gaps, work packages and baseline/target markers, so a purely structural model is expected to score low. That is a statement about what the checklist looks for, not a defect in the model.
+
 Errors: `ModelNotFoundError`.
 
 #### `list_supported_types`
@@ -812,7 +862,20 @@ List the ArchiMate types and Archi folder roots supported by the installed pyArc
 
 Parameters: none.
 
-Returns `data.element_types_by_category`, `data.relationship_types`, `data.folder_roots`, `data.folder_aliases`, `data.access_types`, `data.influence_strengths`, `data.association_is_directed`, `data.layout_strategies`, `data.layout_engines`, `data.semantic_validation_modes`, `data.quality_gates`, `data.relationship_recommendation_intents`, `data.relationship_rule_metadata`, and `data.summary`. The summary carries `element_type_count`, `relationship_type_count`, `supports_views`, and a `source` string naming the pyArchimate version the catalogue was derived from.
+Returns `data.element_types_by_category`, `data.relationship_types`, `data.viewpoints`, `data.folder_roots`, `data.folder_aliases`, `data.access_types`, `data.influence_strengths`, `data.association_is_directed`, `data.layout_strategies`, `data.layout_engines`, `data.semantic_validation_modes`, `data.quality_gates`, `data.relationship_recommendation_intents`, `data.relationship_rule_metadata`, and `data.summary`. The summary carries `element_type_count`, `relationship_type_count`, `supports_views`, and a `source` string naming the pyArchimate version the catalogue was derived from.
+
+`data.viewpoints` is the catalogue for the `viewpoint` parameter of [`create_view`](#create_view) and [`update_view`](#update_view), split into the two namespaces that parameter accepts:
+
+```json
+{
+  "viewpoints": {
+    "pyarchimate_slugs": ["actor", "application", "business", "capability", "..."],
+    "archi_viewpoint_ids": ["application_cooperation", "business_process_cooperation", "capability", "..."]
+  }
+}
+```
+
+Both namespaces are accepted, and they **overlap without either containing the other**: `capability`, `migration`, `organization`, `physical`, `stakeholder`, `strategy` and `technology` appear in both, while `business` is a slug only and `business_process_cooperation` is an Archi id only. There is no rule of thumb that gets this right — a plausible-looking name such as `business_process` is in neither list. Read the value from this tool rather than inferring it from a viewpoint's English name. Invalid values are rejected before the view is created or changed, and the error returns the same two catalogues in `error.details`.
 
 The catalogue exposed by the MCP with the currently pinned pyArchimate 1.12.x contains 63 element types and 11 relationship types. It covers ArchiMate concepts used in Archi's Strategy, Business, Application, Technology, Motivation, Implementation, Other, Relations, and Views model tree folders. Diagram-only Archi annotations are not ArchiMate model concepts and are not in this catalogue: Notes are supported as *visual* view annotations through [`add_note_to_view`](#add_note_to_view) rather than as a type you can pass to `add_element`, and Legends are not supported. Because the catalogue is derived from the installed library rather than hardcoded, call this tool rather than assuming the lists below never change.
 
@@ -1335,7 +1398,12 @@ Parameters:
 | Name | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `view_id` | string | yes | none | ID of the target view. |
+| `detail` | string | no | `"summary"` | `summary` or `full`. `full` adds `data.skipped_relationship_ids`. |
 | `rollback_on_error` | boolean | no | `true` | Restore the previous model state if connection creation fails. |
+
+Returns `data.connection_ids` (newly added), `data.added_count`, `data.skipped_count`, and `data.detail`.
+
+Every relationship in the model that is not drawable in this view counts as a skip, so on a multi-view model the skip list is close to the whole relationship set and every entry in it is expected — 112 ids on the first view of a 143-relationship model. `summary` reports the count only; ask for `full` when you actually need to know which relationships were left out.
 
 Errors: `ModelOperationError`.
 
@@ -1381,6 +1449,7 @@ Parameters:
 | `strategy` | string | no | `layered_by_type` | One of `layered_by_type`, `layered`, or `grid`. Validated but **not applied** when `layout_engine` is `pyarchimate`. |
 | `layout_engine` | string | no | `internal` | Node placement engine for this one call. One of `internal` or `pyarchimate` — see [Layout engines](#layout-engines). Unknown names fail with `error.details.suggestions`. |
 | `layer_bands` | boolean | no | `true` | With `layered_by_type` and two or more ArchiMate layers, wrap each layer in a labeled visual band (diagram-only Archi Group). Set `false` to disable. Never applied when `layout_engine` is `pyarchimate`. |
+| `detail` | string | no | `"summary"` | `summary` or `full`. See Response below. |
 
 Example:
 
@@ -1391,6 +1460,20 @@ Example:
   "layout_engine": "internal"
 }
 ```
+
+Response:
+
+- **`summary` (default)** returns the view's identity, `properties`, `metadata`, `node_count`, `connection_count`, and a `bounds` box (`{x, y, width, height}`, or `null` for an empty view) describing the canvas the layout consumed — enough to place a note in free space afterwards.
+- **`full`** adds `nodes` (each with `x`/`y`/`width`/`height`) and `connections`. A laid-out view of 34 nodes and 60 connections is several thousand tokens of geometry, and the usual next action is to lay out the next view or export, so ask for it only when you need per-node coordinates.
+
+Both shapes report the layer band outcome directly, so you never have to infer it by diffing view properties against your request:
+
+| Field | Meaning |
+| --- | --- |
+| `layer_bands_created` | Number of bands this call produced. |
+| `layer_bands_reason` | `null` when bands were created; otherwise `single_layer_view`, `coverage_view`, `not_requested`, `strategy_does_not_use_bands`, or `engine_does_not_support_bands`. |
+
+Zero bands on a single-layer view is correct rather than a failure — bands are meaningless when there is only one layer. The reason field is what distinguishes that from a view that could not be banded for another reason, which the `mcp:layer_bands` view property cannot: a view that previously had bands and no longer qualifies keeps that property as an empty string.
 
 Layout strategies:
 

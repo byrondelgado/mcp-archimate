@@ -84,11 +84,11 @@ The manager builds on those helpers:
 
 - `add_relationship`/`add_relationships` accept `semantic_validation` (`off`/`warn`/`strict`). Strict mode raises `InvalidRelationshipCombinationError` with the valid alternatives in the exception's `details`.
 - `build_quality_report` composes visual validation, semantic validation, and view coverage into one report; `export_model_content`/`export_model_to_file` accept `quality_gate` (`off`/`warn`/`strict`) which runs that report before serialization and blocks strict exports on failures. The file-export path reuses the gate's report (including its `warnings`) instead of computing it twice.
-- `assess_togaf_readiness` is advisory only (`compliance_claim: false`) and is intentionally frozen in scope.
+- `assess_togaf_readiness` is advisory only (`compliance_claim: false`) and is intentionally frozen in scope. Scoring is seven checks, one point lost per finding: `score` runs 0–7 against `max_score`, `status` is `ready` at zero findings, `partial` at a score of 3 or more, and `limited` below that. `build_quality_report(include_togaf=True)` carries the findings themselves through alongside the tallies — a bare `{"status": "limited", "score": 0, "advisory_findings_count": 7}` could not distinguish "this checklist does not apply to your model" from "your model has seven real problems", and a score against an unstated maximum says nothing. Surfacing already-computed output is not an extension of the checklist, so `decision-015` still holds: no check may be added, removed or reweighted, and `compliance_claim: false` stays.
 
 Error envelopes may carry a structured `error.details` object. `ArchiMateMCPError` stores a `details` dict that every tool handler forwards through `error_response`, so strict-validation failures deliver machine-readable repair options (`error.details.suggested_repairs`, `error.details.valid_alternatives`) and mistyped concept types deliver `error.details.suggestions` (did-you-mean candidates from the supported catalog).
 
-Response models grew two agent-facing surfaces: `RelationshipDetail.is_directed` exposes Association directedness, and `ViewDetail` now includes `description`, `properties`, `metadata` (QA/coverage/stakeholder-facing flags derived from view properties), and `primary_viewpoint`.
+Response models grew two agent-facing surfaces: `RelationshipDetail.is_directed` exposes Association directedness, and `ViewDetail` now includes `description`, `properties`, `metadata` (QA/coverage/stakeholder-facing flags derived from view properties), `primary_viewpoint`, and the layout outcome fields `layer_bands_created` / `layer_bands_reason`. The layout fields default to `None` and are set by `auto_layout_view` only, so every other tool reports `None` — "no layout ran in this call" — rather than a misleading zero.
 
 ## Tool Surface
 
@@ -106,7 +106,7 @@ Model tools:
 - `validate_semantics()` — **additive to `validate_model()`, never a second opinion on the same defect.** The MCP owns no ArchiMate rules of its own; every hard-validity verdict comes from pyArchimate. Two consequences are load-bearing. First, dangling view nodes are deliberately *not* checked here: `check_invalid_nodes()` already reports them and is the stronger check (it also catches an `Element`-cat node with no `ref` at all), while `build_quality_report` places visual and semantic validation side by side, so the former `MISSING_NODE_ELEMENT` issue counted one dangling node twice. Second, the relationship loop *is* a deliberate duplicate of pyArchimate's `check_invalid_relationships()` and must not be collapsed into it: upstream calls `check_valid_relationship` without `raise_flg=True` and discards the reason string, returning bare relationship ids, whereas `_semantic_relationship_issue` passes `raise_flg=True` to capture `str(exc)` and enriches it through `relationship_issue_details` into an actionable issue carrying source/target names and types, `valid_alternatives`, `suggested_repairs` and `requires_decision` — which is what `repair_semantic_issues` and the did-you-mean `error.details` consume.
 - `build_quality_report(*, include_togaf=False, include_quality_assurance_views=False)`
 - `assess_togaf_readiness(*, include_quality_assurance_views=False, include_hard_validation=True)` — advisory only (`compliance_claim: false`)
-- `list_supported_types()`
+- `list_supported_types()` — includes `viewpoints`, the two namespaces `create_view`/`update_view` accept, derived at call time from the same `viewpoint_catalogs()` helper the rejection message reads
 - `summarize_model()`, `summarize_view(view_id)`, `count_by_type()`, and `list_orphan_elements()`
 
 Element tools:
@@ -133,9 +133,9 @@ View tools:
 - `add_note_to_view(view_id, text, x, y, width=185, height=80, connect_to_node_ids=None, note_id=None)` — creates a `Label` node plus optional `connect_note` lines; `ADDITIVE_TOOL`, annotated identically to `add_node_to_view`. Coordinates bypass `_next_free_position` on purpose. `_resolve_note_connection_targets` resolves every target (visual node id *or* element id, via `_find_node_for_element`) **before** the note node is created, which is what makes the tool atomic without a deepcopy rollback: an unknown id raises `ModelOperationError` with `details.unknown_ids` while nothing has been written yet. Blank text is rejected twice — `INVALID_NOTE_TEXT` at the tool boundary, `ModelOperationError` at the manager boundary — so the manager stays safe when called directly, as the tests do.
 - `add_connection_to_view(view_id, relationship_id)`
 - `add_connections_to_view(view_id, connections, *, rollback_on_error=True)`
-- `connect_visible_relationships(view_id, *, rollback_on_error=True)`
+- `connect_visible_relationships(view_id, detail="summary", *, rollback_on_error=True)` — `full` adds `skipped_relationship_ids`
 - `ensure_all_relationships_in_views(coverage_view_name="Relationship Coverage", *, auto_layout=True, layout_strategy="layered_by_type", layout_engine="internal", rollback_on_error=True)` — rejects any `layout_engine` but `internal`; the coverage layout is a fixed pair grid
-- `auto_layout_view(view_id, strategy="layered_by_type", layout_engine="internal")` — `layout_engine` is `internal` (default) or `pyarchimate`; see "The two placement engines"
+- `auto_layout_view(view_id, strategy="layered_by_type", layout_engine="internal", detail="summary", *, layer_bands=True)` — `layout_engine` is `internal` (default) or `pyarchimate`; see "The two placement engines". `detail` selects the response shape (see "Response detail levels"). Both shapes report `layer_bands_created` and `layer_bands_reason`, so a caller never has to infer the band outcome by diffing view properties against its request
 - `render_view_to_svg_file(view_id, path)` — delegates to `ArchimateModelManager.render_view_to_svg_file`, which calls pyArchimate's `View.to_svg(filepath)` (the adapter boundary holds, as always). Returns only `path` plus small metadata; the markup is never returned, and `"svg"` is deliberately absent from `SUPPORTED_FORMATS` so neither string-returning export path can emit it. The render is read-only: it triggers no layout pass and mutates nothing, so node coordinates and bendpoints are identical before and after. `show_stereotypes` is not exposed — it renders `concept.profile_name`, and this server models no profiles, so it would render nothing.
 
 Query tools:
@@ -147,6 +147,17 @@ Workflow tools (agent-facing):
 - `inspect_active_model(*, include_semantic_validation=True, include_orphans=True, sample_limit=10)`
 
 The registered surface is 45 tools, 6 resources, 3 resource templates, and 4 prompts. Every tool declares `ToolAnnotations` from the shared constants in `mcp_app.py`: 17 read-only, 10 additive, 10 idempotent, 8 destructive.
+
+### Response detail levels
+
+`validate_semantics`, `auto_layout_view` and `connect_visible_relationships` take `detail` (`summary` default, or `full`), validated by `ArchimateModelManager.normalize_detail_level` against `SUPPORTED_DETAIL_LEVELS` with the same did-you-mean `error.details.suggestions` shape as the layout enums. `normalize_detail_level` is public because `auto_layout_view` is shaped in the tools layer: the manager returns a `ViewDetail` there, and its internal callers (`auto_layout_all_views`, the export path) need that object rather than a response dict.
+
+The default exists because response size was the dominant cost of driving this server. On a 71-element, 143-relationship model with no views yet, `validate_semantics` returned 214 issues — the completeness checks fire once per element and once per relationship — and about 55 KB, most of it the same `code`, `severity` and `message` strings repeated. Those checks are loudest exactly when they are least actionable: mid-build, before any view exists.
+
+Two shaping rules are load-bearing:
+
+- **The `summary` of `validate_semantics` has no `issues` key.** Not a shorter list — no key at all. A truncated `issues` would let a caller written against `full` silently read fewer issues than it believed it asked for; a missing key fails loudly instead. When the default changed, five real call sites broke this way and were corrected to `detail="full"`: `assess_togaf_readiness`, `repair_semantic_issues`, `_compact_issue_summary` in `inspect_active_model`, and two tests. That is the mechanism working, not collateral damage — do not "fix" it by adding the key back.
+- **Error-severity issues are never grouped away.** `issues_by_code` maps each code to `{count, severity, ids}`, but `errors` carries the error-severity issues in full, so `is_valid: false` always arrives with its reason attached. Subject ids come from the ordered `SEMANTIC_ISSUE_IDENTITY_KEYS` tuple rather than a blind `*_id` sweep, because several issue shapes carry more than one id (a relationship issue also carries source and target element ids) and only the first is the subject; a fallback sweep keeps a future issue code from silently reporting none.
 
 ### Annotation connectors are exempt from visual validation
 
@@ -222,7 +233,7 @@ Layout lives in `pyarchimate_mcp_server.layout` (module-level functions; the man
 
 1. **Shared prologue** (both engines): `remove_layer_bands`, `normalize_view_node_sizes`, `nest_grouped_nodes` (with `remove_redundant_ungrouped_member_nodes` healing), `layout_group_children_for_view`, `apply_relationship_label_policy`, `apply_group_containment_connection_policy`. Every step is correctness or repair, so branching any of it away would regress the model — omitting the nesting healer in particular would make the ARC-017 duplication bug look like it had returned. Removing bands first is additionally required for the upstream engine: bands are top-level `Container` nodes far wider than a grid cell.
 2. **Suitability guard** (`pyarchimate` only), before any placement write.
-3. **Placement branch**: `internal` runs the existing gap computation and strategy dispatch, re-pins group children, and optionally adds layer bands; `pyarchimate` calls `layout.layout_nodes_pyarchimate` and re-pins group children, with no layer bands.
+3. **Placement branch**: `internal` runs the existing gap computation and strategy dispatch, re-pins group children, and optionally adds layer bands; `pyarchimate` calls `layout.layout_nodes_pyarchimate` and re-pins group children, with no layer bands. Both arms produce a band outcome (`{"created": int, "reason": str | None}`) that the epilogue copies onto the returned `ViewDetail`.
 4. **Shared epilogue** (both engines): `_route_or_simplify_connections`, then `map_view_to_detail`. Routing consumes only final node geometry (`node.x/y/w/h`, `node.cat`) and connection endpoints — no rank maps, no barycenters, no lane indices — which is exactly why an alternative placement engine composes with it unchanged.
 
 `layout.layout_nodes_pyarchimate` calls upstream `auto_layout(view, LayoutConfig())`, which is itself only `assign_grid_cells` + `apply_node_positions` — it writes `node.x`/`node.y` and nothing else, never creating, deleting or reparenting nodes, and never touching connection waypoints (`connections_processed` is a hardcoded `0`). It lives in `layout.py` rather than `model_manager.py` because `layout.py` already imports pyArchimate's internal layout surface; `layout.py` still never imports `model_manager`.
@@ -234,6 +245,12 @@ Three upstream behaviours the implementation has to work around:
 - **It preserves waypoints byte-for-byte.** That is helpful within `auto_layout_view`, where placement always precedes routing and routing clears bendpoints first. It is a trap anywhere else: running upstream `auto_layout` *after* a routing pass strands the surviving waypoints in empty canvas. Never call it outside this pipeline.
 
 Layer bands are deliberately not re-applied after upstream placement. Upstream groups nodes into four priority buckets by substring matching, which disagrees with `layer_band_label_for_node`'s six-row ArchiMate classification, so band members end up non-contiguous and the band rectangles interleave; `add_layer_bands` also reparents nodes through `node.move(band)`, making the damage structural rather than cosmetic.
+
+#### The band outcome is reported, never inferred
+
+`add_layer_bands` returns `{"created": int, "reason": str | None}` rather than `None`, and `auto_layout_view` surfaces that as `layer_bands_created` / `layer_bands_reason` in both response shapes. Every path that declines to band a view names itself: `single_layer_view` (fewer than two occupied layers), `coverage_view`, `not_requested` (`layer_bands=False`), `strategy_does_not_use_bands`, and `engine_does_not_support_bands`.
+
+The alternative — letting a caller read the `mcp:layer_bands` view property — cannot express the answer. Requesting bands on a single-layer view correctly produces none, but the property is then simply absent, which is indistinguishable from a failure; and a view that *previously* had bands and no longer qualifies keeps the property as an empty string, because `remove_layer_bands` clears it in the prologue before `add_layer_bands` declines. Three states, one of them unreachable by inspection. The outcome is therefore computed from the current call, not read back.
 
 `ensure_all_relationships_in_views` rejects any engine but `internal`. Its coverage layout is `_layout_coverage_view_pairs`, a fixed source/target pair grid, and coverage views are separately excluded from bands and obstacle routing — so accepting an engine there would advertise a choice it structurally cannot honour.
 
@@ -283,13 +300,33 @@ Before handing XML to pyArchimate, the manager:
 
 After validation, the manager writes the string to a temporary `.archimate` file and calls `Model.read(path)` because pyArchimate 1.12.0 requires a path.
 
+### The filesystem boundary
+
+`pyarchimate_mcp_server/filesystem.py` decides whether a path is reachable at all. It is a leaf module — stdlib plus `exceptions`, never importing `model_manager` — so both the manager and the tools layer can call it. All three file-touching tools go through it: `load_model_from_file` via `resolve_read_path`, and `export_model_to_file` / `render_view_to_svg_file` via the manager's `_resolve_output_path`, which delegates to `resolve_write_path`. A fourth file tool must be routed through here too.
+
+`MCP_ARCHIMATE_ALLOWED_READ_ROOTS` and `MCP_ARCHIMATE_ALLOWED_WRITE_ROOTS` hold one or more absolute paths separated by `os.pathsep`. They are read at call time and never cached: a client may set them after import, and tests change them per case.
+
+Design points that are load-bearing rather than incidental:
+
+- **Unset defaults to `Path.home()`**, a documented default rather than a placeholder. Deny-by-default would break the README quickstarts, which write to `~/Desktop`; leaving it unrestricted would make the protection reachable only by someone who already knew the variables existed — the same discoverability failure as the missing viewpoint catalog.
+- **`Path.expanduser().resolve()` is what makes this a real check** rather than a string comparison. It expands `..` and follows symlinks across the whole path *including a tail that does not exist yet*, so a symlink inside an allowed root pointing out of it resolves to its true target and fails containment. Roots are resolved too, so a symlinked root still matches its own contents. Never replace this with prefix matching.
+- **A relative allowed-root is a configuration error** (`INVALID_ALLOWED_ROOTS`), not something to resolve against the CWD: the boundary must not depend on where the client happened to launch the server. An empty setting is likewise an error rather than a silent fall back to the default.
+- **The read check runs before the existence check** in `load_model_from_file`, so the tool cannot be used to probe for files it may not read — an existing file outside the roots is indistinguishable from a missing one. Do not reorder them.
+- **`_validate_xml_content` still runs first on content.** The roots check governs *where*, the XML validation governs *what*; neither substitutes for the other.
+
+This is **not** a sandbox. Enforcement is in-process and the server still runs as the account that launched it, so it stops an agent from wandering rather than containing a compromised process. `SECURITY.md` states this to users in the same terms.
+
+Error codes here are stable SCREAMING_SNAKE strings rather than class names, which is why `ArchiMateMCPError` grew an `error_code` override and a `code` property. Tools read `exc.code`, which falls back to the class name, so the long-standing convention is unchanged everywhere else.
+
+`tests/conftest.py` widens the roots to the system temp directory for the whole suite, because pytest's `tmp_path` is outside the home directory on macOS. That is a widening, not a bypass: every file test still runs through the real boundary code, and `tests/test_filesystem_roots.py` overrides the variables per test to exercise the boundary against explicit settings.
+
 ## Data Mapping
 
 The manager maps pyArchimate objects into Pydantic details:
 
 - `ElementDetail`: ID, name, type, description, properties, folder, incoming relationship IDs, outgoing relationship IDs.
 - `RelationshipDetail`: ID, name, type, description, properties, access type, influence strength, source element ID, target element ID.
-- `ViewDetail`: ID, name, nodes, and connections.
+- `ViewDetail`: ID, name, description, properties, metadata, primary viewpoint, nodes, connections, and the `auto_layout_view`-only `layer_bands_created` / `layer_bands_reason`. `ViewDetail.summary()` returns the same object without the node and connection lists, adding `node_count`, `connection_count` and a `bounds` box — the canvas the layout consumed, which is what a caller needs to place a note in free space afterwards.
 - `ViewNode`: visual node ID, element ID, element name, element type, optional parent node ID for nested/grouped nodes, `note_text`, x, y, width, and height. `note_text` carries `node.label` for `Label`-cat nodes and is `None` for everything else; without it a note would read back as an anonymous node with no element and no text, indistinguishable from a layer band.
 - `ViewConnection`: visual connection ID, relationship ID, relationship type, source node ID, and target node ID.
 

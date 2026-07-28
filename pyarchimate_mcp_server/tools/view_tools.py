@@ -35,19 +35,32 @@ async def create_view(  # noqa: PLR0913, PLR0917
     `add_connection_to_view` once both endpoint elements are visible.
     Set a `viewpoint` so the view opens with the right Archi viewpoint
     (e.g. `layered` for mixed-layer overviews, `capability` for
-    capability maps, `service_realization` for service views).
+    capability maps, `service_realization` for service views). Take the
+    value from `list_supported_types` (`data.viewpoints`) rather than
+    inferring it from the viewpoint's English name — a plausible
+    `business_process` is not accepted, `business_process_cooperation`
+    is.
 
     Args:
         name: View name. Must be a non-empty string.
         view_id: Optional stable view ID. When omitted a UUID is
-            generated.
+            generated. Must be unique across the
+            *entire* active model — not just within this call, this
+            batch, or this concept type. An id already used by any
+            element, relationship, view, node or connection is
+            rejected. When generating ids across several batches,
+            namespace them (`bp-`, `ac-`, `tech-`) so batches cannot
+            collide.
         folder_path: Optional folder path. The `Views` root is
             normalized: `Views`, `/Views`, and `views` resolve to
             `/Views`.
         viewpoint: Optional viewpoint: any canonical Archi viewpoint id
             (e.g. `layered`, `application_cooperation`) or pyArchimate
-            slug. Invalid values fail with the accepted catalogs in
-            `error.details`.
+            slug. Both catalogs are in `list_supported_types` under
+            `data.viewpoints`. Invalid values are rejected before the
+            view is created — nothing is left behind, so the same
+            `view_id` can be reused on the retry — and the error
+            carries both accepted catalogs in `error.details`.
 
     Returns:
         Success envelope with `data` shaped like a `ViewDetail`:
@@ -56,8 +69,8 @@ async def create_view(  # noqa: PLR0913, PLR0917
     Errors:
         `INVALID_VIEW_NAME` when `name` is missing or blank.
         `ModelNotFoundError` if no model is active.
-        `ModelOperationError` for a duplicate `view_id` or invalid
-        folder path.
+        `ModelOperationError` for a duplicate `view_id`, an unknown
+        `viewpoint`, or an invalid folder path.
     """
     if not isinstance(name, str) or not name.strip():
         return error_response("Invalid view name.", "INVALID_VIEW_NAME")
@@ -79,7 +92,7 @@ async def create_view(  # noqa: PLR0913, PLR0917
             "View created.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=IDEMPOTENT_TOOL)
@@ -101,12 +114,18 @@ async def update_view(
             - `description` (str): New documentation text.
             - `properties` (dict[str, str]): Property updates merged
               into existing properties.
+        viewpoint: Optional viewpoint, as on `create_view`. Validated
+            before anything is applied: an unknown value leaves the
+            view completely untouched, `name` and `description`
+            included.
 
     Returns:
         Success envelope with the updated `ViewDetail` in `data`.
 
     Errors:
         `ViewNotFoundError` when `view_id` is unknown.
+        `ModelOperationError` for an unknown `viewpoint`, with both
+        accepted catalogs in `error.details`.
     """
     try:
         merged_properties = dict(updates.get("properties") or {})
@@ -130,7 +149,7 @@ async def update_view(
             "View updated.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=DESTRUCTIVE_TOOL)
@@ -158,7 +177,7 @@ async def delete_view(view_id: str) -> dict[str, Any]:
             )
         return success_response({"deleted": True}, "View deleted.")
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=ADDITIVE_TOOL)
@@ -186,7 +205,13 @@ async def add_node_to_view(  # noqa: PLR0913, PLR0917
         width: Node width in pixels. Defaults to 160.
         height: Node height in pixels. Defaults to 80.
         node_id: Optional stable visual node ID. When omitted a UUID is
-            generated.
+            generated. Must be unique across the
+            *entire* active model — not just within this call, this
+            batch, or this concept type. An id already used by any
+            element, relationship, view, node or connection is
+            rejected. When generating ids across several batches,
+            namespace them (`bp-`, `ac-`, `tech-`) so batches cannot
+            collide.
 
     Returns:
         Success envelope with `data.node_id` containing the visual
@@ -211,7 +236,7 @@ async def add_node_to_view(  # noqa: PLR0913, PLR0917
         )
         return success_response({"node_id": node.uuid}, "Node added.")
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=ADDITIVE_TOOL)
@@ -259,7 +284,13 @@ async def add_note_to_view(  # noqa: PLR0913, PLR0917
             entry may be a visual node ID or an element ID that is
             already visible in this view.
         note_id: Optional stable visual node ID. When omitted a UUID is
-            generated.
+            generated. Must be unique across the
+            *entire* active model — not just within this call, this
+            batch, or this concept type. An id already used by any
+            element, relationship, view, node or connection is
+            rejected. When generating ids across several batches,
+            namespace them (`bp-`, `ac-`, `tech-`) so batches cannot
+            collide.
 
     Returns:
         Success envelope with `data.node_id`, `data.connection_ids`,
@@ -298,7 +329,7 @@ async def add_note_to_view(  # noqa: PLR0913, PLR0917
             "Note added.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=ADDITIVE_TOOL)
@@ -353,7 +384,7 @@ async def add_nodes_to_view(
             "Nodes added.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=IDEMPOTENT_TOOL)
@@ -361,6 +392,7 @@ async def auto_layout_view(
     view_id: str,
     strategy: str = "layered_by_type",
     layout_engine: str = "internal",
+    detail: str = "summary",
     *,
     layer_bands: bool = True,
 ) -> dict[str, Any]:
@@ -409,15 +441,33 @@ async def auto_layout_view(
               rather than silently overlapped — see Errors.
 
     Returns:
-        Success envelope with the resulting `ViewDetail` in `data`
-        (nodes with updated x/y/width/height and connections). Under
+        Success envelope with the laid-out view in `data`. Under
         `pyarchimate` the message says which options were not applied.
+
+        `detail="summary"` (default) returns the view's identity,
+        `properties`, `metadata`, `node_count`, `connection_count`, and
+        a `bounds` box (`{x, y, width, height}`, or null for an empty
+        view) giving the canvas the layout consumed — enough to place a
+        note in free space afterwards.
+
+        `detail="full"` adds `nodes` (each with x/y/width/height) and
+        `connections`. Ask for it when you need per-node geometry; it
+        is several thousand tokens on a mid-sized view.
+
+        Both shapes report the band outcome directly:
+        `layer_bands_created` (int) and `layer_bands_reason`, which is
+        null when bands were created and otherwise one of
+        `single_layer_view`, `coverage_view`, `not_requested`,
+        `strategy_does_not_use_bands`, or
+        `engine_does_not_support_bands`. Zero bands on a single-layer
+        view is correct, not a failure.
 
     Errors:
         `ViewNotFoundError` (returned as `ModelOperationError`) when
             `view_id` is unknown.
-        `ModelOperationError` for an unknown strategy or engine, with
-            close matches in `error.details.suggestions`.
+        `ModelOperationError` for an unknown strategy, engine, or
+            `detail` level, with close matches in
+            `error.details.suggestions`.
         `ModelOperationError` when `layout_engine="pyarchimate"` cannot
             lay the view out safely, with `error.details.grid_size` and
             `error.details.oversized_nodes`. No placement is written, so
@@ -426,7 +476,11 @@ async def auto_layout_view(
             repaired it. Retry with `layout_engine="internal"`.
     """
     try:
-        detail = _model_manager().auto_layout_view(
+        model_manager = _model_manager()
+        # Validated before the layout runs: a typo in `detail` should
+        # not cost a full layout pass before it is reported.
+        detail_level = model_manager.normalize_detail_level(detail)
+        view_detail = model_manager.auto_layout_view(
             view_id=view_id,
             strategy=strategy,
             layout_engine=layout_engine,
@@ -438,9 +492,14 @@ async def auto_layout_view(
                 "View layout updated (engine: pyarchimate; strategy and "
                 "layer bands not applied by this engine)."
             )
-        return success_response(detail.model_dump(), message)
+        payload = (
+            view_detail.model_dump()
+            if detail_level == "full"
+            else view_detail.summary()
+        )
+        return success_response(payload, message)
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=IDEMPOTENT_TOOL)
@@ -487,7 +546,7 @@ async def render_view_to_svg_file(view_id: str, path: str) -> dict[str, Any]:
             "View rendered to SVG file.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=ADDITIVE_TOOL)
@@ -507,7 +566,13 @@ async def add_connection_to_view(
         view_id: ID of the target view.
         relationship_id: ID of the relationship to render.
         connection_id: Optional stable visual connection ID. When
-            omitted a UUID is generated.
+            omitted a UUID is generated. Must be unique across the
+            *entire* active model — not just within this call, this
+            batch, or this concept type. An id already used by any
+            element, relationship, view, node or connection is
+            rejected. When generating ids across several batches,
+            namespace them (`bp-`, `ac-`, `tech-`) so batches cannot
+            collide.
 
     Returns:
         Success envelope with `data.connection_id` containing the
@@ -530,7 +595,7 @@ async def add_connection_to_view(
             "Connection added.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=ADDITIVE_TOOL)
@@ -584,12 +649,13 @@ async def add_connections_to_view(
             "Connections added.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=IDEMPOTENT_TOOL)
 async def connect_visible_relationships(
     view_id: str,
+    detail: str = "summary",
     *,
     rollback_on_error: bool = True,
 ) -> dict[str, Any]:
@@ -602,27 +668,34 @@ async def connect_visible_relationships(
 
     Args:
         view_id: ID of the target view.
+        detail: `summary` (default) or `full`. Every relationship that
+            is not drawable in this view counts as a skip, so on a
+            multi-view model the skip list is close to the whole
+            relationship set and every entry is expected. `full` adds
+            `data.skipped_relationship_ids`.
         rollback_on_error: When true (default), restore the previous
             view state if any connection fails.
 
     Returns:
         Success envelope with `data.connection_ids` (newly added),
-        `data.added_count`, `data.skipped_relationship_ids`, and
-        `data.skipped_count`.
+        `data.added_count`, `data.skipped_count`, and `data.detail`.
+        Under `full`, also `data.skipped_relationship_ids`.
 
     Errors:
-        `ModelOperationError` when `view_id` is unknown.
+        `ModelOperationError` when `view_id` is unknown, or for an
+        unknown `detail` level.
     """
     try:
         return success_response(
             _model_manager().connect_visible_relationships(
                 view_id,
                 rollback_on_error=rollback_on_error,
+                detail=detail,
             ),
             "Visible relationships connected.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=IDEMPOTENT_TOOL)
@@ -688,4 +761,4 @@ async def ensure_all_relationships_in_views(
             "Relationships rendered in views.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)

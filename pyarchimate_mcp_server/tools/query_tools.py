@@ -48,7 +48,7 @@ async def query_elements(filter_criteria: dict[str, Any]) -> dict[str, Any]:
         ]
         return success_response({"elements": elements}, "Elements queried.")
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=READ_ONLY_TOOL)
@@ -94,4 +94,4 @@ async def query_relationships(filter_criteria: dict[str, Any]) -> dict[str, Any]
             "Relationships queried.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from lxml import etree
+from pyArchimate.viewpoint_registry import STANDARD_VIEWPOINTS
 
 from pyarchimate_mcp_server import layout as layout_module
 from pyarchimate_mcp_server.constants import (
@@ -18,6 +19,7 @@ from pyarchimate_mcp_server.exceptions import (
 )
 from pyarchimate_mcp_server.model_manager import (
     ARCHI_PLAIN_CONNECTION_TYPE,
+    ARCHI_VIEWPOINT_IDS,
     COVERAGE_VIEW_PROPERTY_KEY,
     COVERAGE_VIEW_PROPERTY_VALUE,
     GROUP_CONTAINMENT_RELATIONSHIP_LINE_COLOR,
@@ -1620,6 +1622,42 @@ def test_supported_types_include_archimate_categories():
     ]
 
 
+def test_supported_types_include_both_viewpoint_namespaces():
+    manager = ArchimateModelManager()
+    viewpoints = manager.list_supported_types()["viewpoints"]
+
+    assert viewpoints["pyarchimate_slugs"] == sorted(
+        viewpoint_def.id for viewpoint_def in STANDARD_VIEWPOINTS
+    )
+    assert viewpoints["archi_viewpoint_ids"] == sorted(ARCHI_VIEWPOINT_IDS)
+    # The two namespaces overlap, which is precisely why a caller cannot
+    # infer one from the other and needs both published.
+    assert "technology" in viewpoints["pyarchimate_slugs"]
+    assert "technology" in viewpoints["archi_viewpoint_ids"]
+    assert "business_process_cooperation" in viewpoints["archi_viewpoint_ids"]
+    assert "business_process" not in (
+        viewpoints["pyarchimate_slugs"] + viewpoints["archi_viewpoint_ids"]
+    )
+
+
+def test_every_advertised_viewpoint_is_accepted_by_create_view():
+    """The advertised catalog and the accepted catalog must not drift."""
+    manager = ArchimateModelManager()
+    manager.create_new_model("Viewpoint Catalog Test")
+    viewpoints = manager.list_supported_types()["viewpoints"]
+    advertised = viewpoints["pyarchimate_slugs"] + viewpoints["archi_viewpoint_ids"]
+
+    assert advertised
+
+    for index, viewpoint in enumerate(advertised):
+        view = manager.create_view(
+            f"View {index}",
+            view_id=f"id-view-{index}",
+            properties={"viewpoint": viewpoint},
+        )
+        assert view.prop("viewpoint") == viewpoint
+
+
 def test_model_export_rejects_invalid_auto_layout_strategy_without_views():
     manager = ArchimateModelManager()
     manager.create_new_model("Invalid Export Layout Test")
@@ -2916,7 +2954,7 @@ def test_validate_semantics_enriches_invalid_relationship_and_groups_counts():
         access_type="Read",
     )
 
-    result = manager.validate_semantics()
+    result = manager.validate_semantics(detail="full")
 
     issue = next(
         issue
@@ -2963,7 +3001,7 @@ def test_dangling_view_node_is_reported_once_by_visual_validation():
     assert validation["invalid_node_ids"] == [node.uuid]
     assert validation["invalid_nodes_count"] == 1
 
-    semantics = manager.validate_semantics()
+    semantics = manager.validate_semantics(detail="full")
     assert not [
         issue
         for issue in semantics["issues"]
@@ -2995,9 +3033,8 @@ def test_repair_semantic_issues_preserves_relationship_id_and_reconnects_view():
     manager.add_node_to_view(view.uuid, process.uuid)
     manager.add_node_to_view(view.uuid, service.uuid)
     manager.add_connection_to_view(view.uuid, relationship.uuid)
-    repair_id = manager.validate_semantics()["issues"][0]["suggested_repairs"][0][
-        "repair_id"
-    ]
+    issues = manager.validate_semantics(detail="full")["issues"]
+    repair_id = issues[0]["suggested_repairs"][0]["repair_id"]
 
     result = manager.repair_semantic_issues(repair_ids=[repair_id])
     repaired = manager.get_relationship_by_id("id-invalid")
@@ -3381,6 +3418,65 @@ def test_unknown_viewpoint_rejected_with_both_catalogs():
     assert "layered" in exc_info.value.details["supported_archi_viewpoint_ids"]
 
 
+def test_rejected_viewpoint_creates_no_view():
+    manager = ArchimateModelManager()
+    model = manager.create_new_model("Rejected Viewpoint Test")
+
+    with pytest.raises(ModelOperationError):
+        manager.create_view(
+            "1. Business Process View",
+            view_id="id-view-business",
+            properties={"viewpoint": "business_process"},
+        )
+
+    assert manager.list_views() == []
+    assert "id-view-business" not in model.views_dict
+
+
+def test_view_id_is_reusable_after_a_rejected_viewpoint():
+    manager = ArchimateModelManager()
+    manager.create_new_model("Retry Viewpoint Test")
+
+    with pytest.raises(ModelOperationError):
+        manager.create_view(
+            "1. Business Process View",
+            view_id="id-view-business",
+            properties={"viewpoint": "business_process"},
+        )
+
+    view = manager.create_view(
+        "1. Business Process View",
+        view_id="id-view-business",
+        properties={"viewpoint": "business_process_cooperation"},
+    )
+
+    assert view.uuid == "id-view-business"
+    assert view.prop("viewpoint") == "business_process_cooperation"
+
+
+def test_rejected_viewpoint_leaves_an_existing_view_untouched():
+    manager = ArchimateModelManager()
+    manager.create_new_model("Update Viewpoint Test")
+    view = manager.create_view(
+        "Original Name",
+        view_id="id-view-business",
+        description="Original description.",
+        properties={"viewpoint": "layered"},
+    )
+
+    with pytest.raises(ModelOperationError):
+        manager.update_view(
+            "id-view-business",
+            name="Renamed By Failed Call",
+            description="Replaced description.",
+            properties={"viewpoint": "totally_bogus"},
+        )
+
+    assert view.name == "Original Name"
+    assert view.desc == "Original description."
+    assert view.prop("viewpoint") == "layered"
+
+
 def test_auto_layout_fixture_model_meets_compactness_floor():
     manager = _build_rich_fixture_model()
     manager.auto_layout_all_views()
@@ -3664,3 +3760,217 @@ def test_dense_label_policy_leaves_annotation_connectors_untouched():
     assert annotation.relationship_type is None
     summary = manager.summarize_view(view.uuid)
     assert summary["connection_counts_by_type"]["Unknown"] == 1
+
+
+UNPLACED_ELEMENT_COUNT = 71
+UNPLACED_RELATIONSHIP_COUNT = 143
+UNPLACED_ISSUE_COUNT = UNPLACED_ELEMENT_COUNT + UNPLACED_RELATIONSHIP_COUNT
+
+
+def _build_unplaced_model(
+    element_count=UNPLACED_ELEMENT_COUNT,
+    relationship_count=UNPLACED_RELATIONSHIP_COUNT,
+):
+    """Elements and relationships built, no views yet — the mid-build state."""
+    manager = ArchimateModelManager()
+    manager.create_new_model("Unplaced Content")
+    element_ids = [
+        manager.add_archimate_element(
+            name=f"Component {index:02d}",
+            element_type="ApplicationComponent",
+            element_id=f"id-elem-{index:02d}",
+        ).uuid
+        for index in range(element_count)
+    ]
+    for index in range(relationship_count):
+        source = element_ids[index % element_count]
+        target = element_ids[(index * 7 + 3) % element_count]
+        if source == target:
+            target = element_ids[(index + 1) % element_count]
+        manager.add_archimate_relationship(
+            relationship_type="Association",
+            source_id=source,
+            target_id=target,
+            relationship_id=f"id-rel-{index:03d}",
+        )
+    return manager
+
+
+def test_semantic_summary_is_far_smaller_than_the_full_response():
+    manager = _build_unplaced_model()
+
+    summary = manager.validate_semantics()
+    full = manager.validate_semantics(detail="full")
+
+    assert full["issues_count"] == UNPLACED_ISSUE_COUNT
+    assert summary["issues_count"] == full["issues_count"]
+    # The whole point of the default: the payload must collapse, not
+    # shrink slightly. 214 issues was ~55 KB of mostly repeated strings.
+    assert len(json.dumps(summary)) * 5 < len(json.dumps(full))
+
+
+def test_semantic_summary_groups_by_code_without_repeating_strings():
+    manager = _build_unplaced_model()
+
+    summary = manager.validate_semantics()
+
+    by_code = summary["issues_by_code"]
+    assert by_code["ELEMENT_NOT_IN_ANY_VIEW"]["count"] == UNPLACED_ELEMENT_COUNT
+    assert (
+        by_code["RELATIONSHIP_NOT_IN_ANY_VIEW"]["count"] == UNPLACED_RELATIONSHIP_COUNT
+    )
+    assert by_code["ELEMENT_NOT_IN_ANY_VIEW"]["severity"] == "warning"
+    assert len(by_code["ELEMENT_NOT_IN_ANY_VIEW"]["ids"]) == UNPLACED_ELEMENT_COUNT
+    assert "id-elem-00" in by_code["ELEMENT_NOT_IN_ANY_VIEW"]["ids"]
+    assert "id-rel-000" in by_code["RELATIONSHIP_NOT_IN_ANY_VIEW"]["ids"]
+    # A stale caller must break loudly rather than silently read a
+    # shorter list than it asked for.
+    assert "issues" not in summary
+
+
+def test_semantic_summary_keeps_error_issues_fully_readable():
+    manager = _build_unplaced_model(element_count=2, relationship_count=0)
+    # Two elements sharing a name and type is an error-severity issue.
+    for element in manager.list_elements():
+        element.name = "Duplicated"
+
+    summary = manager.validate_semantics()
+
+    assert summary["is_valid"] is False
+    assert [issue["code"] for issue in summary["errors"]] == ["DUPLICATE_ELEMENT_NAME"]
+    assert summary["errors"][0]["name"] == "Duplicated"
+    assert sorted(summary["errors"][0]["element_ids"]) == ["id-elem-00", "id-elem-01"]
+
+
+def test_connect_visible_relationships_summary_omits_skipped_ids():
+    manager = _build_unplaced_model(element_count=4, relationship_count=3)
+    view = manager.create_view("Partial", view_id="id-view")
+    manager.add_node_to_view("id-view", "id-elem-00")
+    manager.add_node_to_view("id-view", "id-elem-01")
+
+    summary = manager.connect_visible_relationships("id-view")
+    full = manager.connect_visible_relationships(view.uuid, detail="full")
+
+    assert summary["skipped_count"] > 0
+    assert "skipped_relationship_ids" not in summary
+    assert len(full["skipped_relationship_ids"]) == full["skipped_count"]
+
+
+def test_quality_report_carries_the_togaf_findings_and_scale():
+    manager = _build_unplaced_model(element_count=2, relationship_count=1)
+
+    report = manager.build_quality_report(include_togaf=True)["togaf_readiness"]
+    standalone = manager.assess_togaf_readiness()
+
+    assert [finding["code"] for finding in report["advisory_findings"]] == [
+        finding["code"] for finding in standalone["advisory_findings"]
+    ]
+    assert report["advisory_findings_count"] == len(report["advisory_findings"])
+    # A bare score is uninterpretable: 0 out of what?
+    assert report["max_score"] == standalone["max_score"]
+    assert 0 <= report["score"] <= report["max_score"]
+    # decision-015: the machine-readable disclaimer is load-bearing.
+    assert report["compliance_claim"] is False
+
+
+def _model_with_shared_id_candidate():
+    manager = ArchimateModelManager()
+    manager.create_new_model("ID Uniqueness Test")
+    manager.add_archimate_element(
+        "Checkout",
+        "BusinessProcess",
+        element_id="id-shared",
+    )
+    manager.add_archimate_element("Order", "BusinessObject", element_id="id-order")
+    return manager
+
+
+def test_an_element_id_cannot_be_reused_by_a_relationship():
+    manager = _model_with_shared_id_candidate()
+
+    with pytest.raises(ModelOperationError) as exc_info:
+        manager.add_archimate_relationship(
+            "id-shared",
+            "id-order",
+            "Access",
+            relationship_id="id-shared",
+        )
+
+    assert exc_info.value.details["existing_concept_kind"] == "element"
+    assert "element" in str(exc_info.value)
+
+
+def test_an_element_id_cannot_be_reused_by_a_view_node_or_connection():
+    manager = _model_with_shared_id_candidate()
+    relationship = manager.add_archimate_relationship(
+        "id-shared",
+        "id-order",
+        "Access",
+    )
+
+    with pytest.raises(ModelOperationError):
+        manager.create_view("Overview", view_id="id-shared")
+
+    view = manager.create_view("Overview")
+    manager.add_node_to_view(view.uuid, "id-shared")
+    manager.add_node_to_view(view.uuid, "id-order")
+
+    with pytest.raises(ModelOperationError):
+        manager.add_node_to_view(view.uuid, "id-order", node_id="id-shared")
+    with pytest.raises(ModelOperationError):
+        manager.add_note_to_view(view.uuid, "A note", 900, 900, note_id="id-shared")
+    with pytest.raises(ModelOperationError):
+        manager.add_connection_to_view(
+            view.uuid,
+            relationship.uuid,
+            connection_id="id-shared",
+        )
+
+
+def test_a_same_type_collision_keeps_its_original_message():
+    """The field report called this message clear; do not degrade it."""
+    manager = _model_with_shared_id_candidate()
+
+    with pytest.raises(ModelOperationError) as exc_info:
+        manager.add_archimate_element(
+            "Duplicate",
+            "BusinessProcess",
+            element_id="id-shared",
+        )
+
+    assert str(exc_info.value) == "Element with ID 'id-shared' already exists."
+
+
+def test_neither_export_can_emit_a_duplicate_identifier():
+    manager = _build_rich_fixture_model()
+    manager.auto_layout_all_views()
+
+    for output_format in ("archi", "archimate"):
+        content = manager.get_model_content_as_string(output_format)
+        root = etree.fromstring(content.encode("utf-8"))
+        identifiers = root.xpath("//@id") + root.xpath("//@identifier")
+        duplicates = sorted({i for i in identifiers if identifiers.count(i) > 1})
+
+        assert not duplicates, f"{output_format} emitted duplicate ids: {duplicates}"
+
+
+def test_repair_preserving_relationship_ids_still_works():
+    """Recreating under the original id must stay possible after the tightening."""
+    manager = ArchimateModelManager()
+    manager.create_new_model("Repair Reuse Test")
+    process = manager.add_archimate_element("Checkout", "BusinessProcess")
+    service = manager.add_archimate_element("Payments", "ApplicationService")
+    manager.add_archimate_relationship(
+        process.uuid,
+        service.uuid,
+        "Access",
+        relationship_id="id-keep-me",
+    )
+
+    result = manager.repair_semantic_issues(
+        repair_all_deterministic=True,
+        preserve_relationship_ids=True,
+    )
+
+    assert result["applied_count"] == 1
+    assert "id-keep-me" in manager.get_active_model().rels_dict

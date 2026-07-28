@@ -38,14 +38,35 @@ def test_load_model_from_file_loads_local_archimate_file(tmp_path, monkeypatch):
     assert loaded_manager.get_active_model() is not None
 
 
-def test_load_model_from_file_reports_missing_path():
-    response = asyncio.run(
-        workflow_tools.load_model_from_file("/missing/model.archimate"),
-    )
+def test_load_model_from_file_reports_missing_path(tmp_path):
+    missing = tmp_path / "model.archimate"
+
+    response = asyncio.run(workflow_tools.load_model_from_file(str(missing)))
 
     assert response["status"] == "error"
     assert response["error"]["code"] == "FILE_NOT_FOUND"
-    assert response["message"] == "File not found: /missing/model.archimate"
+    assert response["message"] == f"File not found: {missing}"
+
+
+def test_load_model_from_file_refuses_a_path_outside_the_allowed_roots():
+    response = asyncio.run(
+        workflow_tools.load_model_from_file("/etc/hosts"),
+    )
+
+    assert response["status"] == "error"
+    assert response["error"]["code"] == "PATH_OUTSIDE_ALLOWED_ROOTS"
+    # The boundary is checked before the existence check on purpose, so
+    # the tool cannot be used to probe for files it may not read: an
+    # existing file outside the roots is indistinguishable from a
+    # missing one.
+    assert "FILE_NOT_FOUND" not in response["error"]["code"]
+    details = response["error"]["details"]
+    assert details["path"] == "/etc/hosts"
+    # Reported as resolved, not as given: on macOS /etc is a symlink to
+    # /private/etc, and it is the resolved target that failed the check.
+    assert details["resolved_path"].endswith("etc/hosts")
+    assert details["environment_variable"] == "MCP_ARCHIMATE_ALLOWED_READ_ROOTS"
+    assert details["allowed_roots"]
 
 
 def test_create_empty_model_sets_documentation_and_properties(monkeypatch):

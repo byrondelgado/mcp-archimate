@@ -44,7 +44,13 @@ async def add_element(  # noqa: PLR0913, PLR0917
         properties: Optional custom property key-value pairs. Values are
             stored as strings.
         element_id: Optional stable element ID. When omitted a UUID is
-            generated.
+            generated. Must be unique across the
+            *entire* active model — not just within this call, this
+            batch, or this concept type. An id already used by any
+            element, relationship, view, node or connection is
+            rejected. When generating ids across several batches,
+            namespace them (`bp-`, `ac-`, `tech-`) so batches cannot
+            collide.
 
     Returns:
         Success envelope with `data` shaped like an `ElementDetail`:
@@ -74,7 +80,7 @@ async def add_element(  # noqa: PLR0913, PLR0917
         detail = model_manager.map_element_to_detail(element).model_dump()
         return success_response(detail, "Element added.")
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=ADDITIVE_TOOL)
@@ -88,6 +94,12 @@ async def add_elements(
     Each element item supports the same fields as `add_element`. Both
     short and long field names are accepted (`type` or `element_type`,
     `id` or `element_id`).
+
+    IDs are unique across the **entire active model**, not per call,
+    per batch, or per concept type. Splitting a build across several
+    batches does not give each batch its own id space, so namespace
+    generated ids (`bp-`, `ac-`, `tech-`) rather than restarting the
+    same naming pattern in each one.
 
     Element item shape:
         ```
@@ -133,7 +145,7 @@ async def add_elements(
             "Elements added.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=IDEMPOTENT_TOOL)
@@ -186,7 +198,7 @@ async def update_element(
             "Element updated.",
         )
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)
 
 
 @mcp.tool(annotations=DESTRUCTIVE_TOOL)
@@ -214,4 +226,4 @@ async def delete_element(element_id: str) -> dict[str, Any]:
             )
         return success_response({"deleted": True}, "Element deleted.")
     except ArchiMateMCPError as exc:
-        return error_response(str(exc), exc.__class__.__name__, exc.details)
+        return error_response(str(exc), exc.code, exc.details)

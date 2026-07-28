@@ -92,8 +92,10 @@ args = ["mcp-archimate"]
 npx @modelcontextprotocol/inspector uvx mcp-archimate
 ```
 
-No API keys, no environment variables, no configuration file. The server needs
-none of them.
+No API keys and no configuration file. The only environment variables it reads
+are the two optional filesystem roots described under
+[Security considerations](#security-considerations); unset, they default to your
+home directory.
 
 ## Example prompts
 
@@ -280,14 +282,19 @@ diagonals through boxes.
 Two things are worth knowing before you point an agent at this server. The full
 picture, including how to report a vulnerability, is in [SECURITY.md](https://github.com/byrondelgado/mcp-archimate/blob/main/SECURITY.md).
 
-**It has your filesystem rights.** `load_model_from_file` reads any path you can
-read; `export_model_to_file` and `render_view_to_svg_file` write any path you can
-write, overwriting without prompting. There is no allowed-root restriction yet.
-This is ordinary for a local MCP server, but the caller here is usually an LLM
-agent rather than a person typing a path — so treat a path argument the way you
-would treat a shell command an agent proposed, and point exports at a working
-directory rather than somewhere irreplaceable. If you need a hard boundary now,
-run the server in a container or under a dedicated account.
+**The file tools are confined to allowed roots.** `load_model_from_file` reads,
+and `export_model_to_file` and `render_view_to_svg_file` write, only inside the
+directories named by `MCP_ARCHIMATE_ALLOWED_READ_ROOTS` and
+`MCP_ARCHIMATE_ALLOWED_WRITE_ROOTS`. Unset, both default to your home directory,
+which keeps the quickstarts above working while putting `/etc`, system locations
+and other users' files out of reach. Paths are fully resolved first, so `..` and
+symlinks cannot escape. Set the variables to a dedicated models directory to
+narrow it further — with the home default, `~/.ssh` is still readable. This is
+not a sandbox: the server runs as the account that launched it, and exports still
+overwrite without prompting inside an allowed root. It exists because the caller
+here is usually an LLM agent rather than a person typing a path, so treat a path
+argument the way you would treat a shell command an agent proposed. For a hard
+boundary, run the server in a container or under a dedicated account.
 
 **Model files are untrusted input.** The loader rejects DTDs and entity
 declarations outright, parses with external entity resolution and network access

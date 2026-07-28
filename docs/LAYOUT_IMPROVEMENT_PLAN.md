@@ -157,6 +157,24 @@
 > 2. **Spread anchors along node edges** (see `compute_corner_clearance`
 >    above), sized on the 58/100 shared-endpoint measurement.
 
+> **Status update (2026-07-28):** `add_layer_bands` now returns
+> `{"created": int, "reason": str | None}` instead of `None`, and
+> `auto_layout_view` surfaces that as `layer_bands_created` /
+> `layer_bands_reason` on the returned `ViewDetail` under both engines. Band
+> *behaviour* is unchanged — members are still only `cat == "Element"` nodes,
+> bands still need two or more occupied layers, and they are still never
+> re-added under `pyarchimate`. What changed is that each declining path now
+> names itself rather than leaving the caller to infer the outcome from the
+> `mcp:layer_bands` view property, which cannot express it: an absent key looks
+> the same as a legitimately unbanded single-layer view, and a view that used
+> to have bands keeps the property as an empty string once `remove_layer_bands`
+> clears it in the prologue (ARC-060).
+>
+> `auto_layout_view` also gained `detail` (`"summary"` default). The summary
+> drops the per-node and per-connection lists but keeps a `bounds` box, because
+> placing a note afterwards needs to know where the free canvas is — the one
+> thing per-node coordinates were still being read for. See `decision-017`.
+
 > **Status update (2026-07-04):** Major roadmap items are now implemented in
 > `layout.py`: labeled visual layer bands for multi-layer views (diagram-only
 > Archi Groups, `layer_bands=false` to disable), lane wrapping at 1,600px,

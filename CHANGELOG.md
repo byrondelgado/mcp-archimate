@@ -5,6 +5,134 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-07-28
+
+Every change here comes from a field report covering two models built end to end
+through the tool surface (5 elements / 1 view, and 71 elements / 143
+relationships / 5 views).
+
+**Breaking, twice:** the file tools are now confined to allowed roots, defaulting
+to your home directory; and `validate_semantics`, `auto_layout_view` and
+`connect_visible_relationships` default to a summary-sized response. See Changed
+for what moved and how to restore the previous behaviour.
+
+### Changed
+
+- **`load_model_from_file`, `export_model_to_file` and `render_view_to_svg_file`
+  are confined to allowed filesystem roots.** They previously accepted any path
+  the launching account could reach, which is ordinary for a local MCP server but
+  poor for one whose caller is an LLM agent acting on content it read from a
+  model file. Two new environment variables set the boundary —
+  `MCP_ARCHIMATE_ALLOWED_READ_ROOTS` and `MCP_ARCHIMATE_ALLOWED_WRITE_ROOTS` —
+  each taking one or more absolute paths separated by the platform path
+  separator, with `~` expanded.
+
+  **Unset, both default to your home directory.** That keeps every documented
+  workflow working (the quickstarts write to `~/Desktop`) while putting `/etc`,
+  system locations and other users' files out of reach. If you read or write
+  models outside your home directory — a shared drive, `/opt`, a project under
+  `/srv` — set the variables or those calls will now fail.
+
+  Paths are expanded and fully resolved before the check, so `..` segments and
+  symlinks cannot escape: a symlink inside an allowed root pointing outside it
+  resolves to its real target and is refused. A rejected path returns
+  `PATH_OUTSIDE_ALLOWED_ROOTS` with the resolved path, the configured roots and
+  the variable to change in `error.details`; an unusable configuration returns
+  `INVALID_ALLOWED_ROOTS` rather than silently falling back. For reads the
+  boundary is checked before the existence check, so an existing file outside the
+  roots is indistinguishable from a missing one.
+
+  This is not a sandbox — enforcement is in-process and the server still runs as
+  the launching account — and the home default still exposes things like
+  `~/.ssh`. Narrow the roots when that matters. (ARC-050)
+
+- **Three tools default to `detail="summary"`; pass `detail="full"` for the old
+  response.** Response size was the dominant cost of driving this server: on a
+  71-element, 143-relationship model with no views yet, `validate_semantics`
+  returned 214 issues and about 55 KB — large enough that the client spilled it
+  to disk rather than keep it in context — of which the repeated `code`,
+  `severity` and `message` strings were most of the weight. The completeness
+  checks fire once per element and once per relationship, so they are loudest
+  exactly when they are least actionable: mid-build, before any view exists.
+  - `validate_semantics` summary: `issues_by_code` maps each code to
+    `{count, severity, ids}`, and `errors` carries the error-severity issues in
+    full, so `is_valid: false` always arrives with its reason. There is
+    deliberately **no `issues` key** in the summary — a caller that still reads
+    it fails loudly rather than silently reading a shorter list.
+  - `auto_layout_view` summary: identity, properties, metadata, `node_count`,
+    `connection_count`, and a `bounds` box giving the canvas the layout
+    consumed, which is what you need to place a note in free space. `full` adds
+    the per-node geometry and connections.
+  - `connect_visible_relationships` summary: counts only. Every relationship not
+    drawable in the target view counts as a skip, so on a multi-view model that
+    id list is close to the whole relationship set and every entry is expected.
+  No `severity_filter` was added: the summary already separates errors from
+  grouped warnings, so a build loop can read `data.errors` directly. (ARC-058)
+- **`build_quality_report(include_togaf=true)` returns the findings and the
+  scale, not just tallies.** It reported `{"status": "limited", "score": 0,
+  "advisory_findings_count": 7}` — seven findings, none of them reachable, and a
+  score against an unstated maximum. A caller could not tell "this assessment
+  does not apply to your model" from "your model has seven real problems". The
+  block now carries `advisory_findings`, `max_score`, `hard_failures_count` and
+  `compliance_claim`, all of which were already computed. The scoring scale
+  (0–7; `ready` at zero findings, `partial` at 3 or more, `limited` below) is
+  now documented on `assess_togaf_readiness`. Per `decision-015` the checklist
+  itself is unchanged — no check was added, removed or reweighted. (ARC-059)
+- **`auto_layout_view` reports the layer band outcome as data.** Requesting
+  bands on a single-layer view correctly produces none, but the response said so
+  only by omitting a view property, so "not applicable" and "failed" looked
+  identical. Both response shapes now carry `layer_bands_created` and
+  `layer_bands_reason` (`single_layer_view`, `coverage_view`, `not_requested`,
+  `strategy_does_not_use_bands`, or `engine_does_not_support_bands`). This also
+  covers the case the property could never express: a view that previously had
+  bands and no longer qualifies keeps `mcp:layer_bands` as an empty string.
+  (ARC-060)
+
+### Fixed
+
+- **A client-supplied ID could be reused across concept types, producing an
+  export with a duplicate identifier.** IDs were checked only against their own
+  concept namespace, so the same id could be given to an element, a
+  relationship, a view, a node and a connection at once — each step accepted.
+  Both writers then emitted that identifier twice in a single document: in the
+  exchange format `identifier` is the `xs:ID` that `relationshipRef` points at
+  as a required `xs:IDREF`, so the file failed schema validation; in the native
+  format two concepts sharing an id let an `archimateElement` reference resolve
+  to the wrong one. Nothing caught it — the round trip through pyArchimate
+  succeeds because it keys concepts by the same separate namespaces, and
+  `quality_gate="strict"` checks visual, semantic and coverage issues but not id
+  uniqueness. IDs are now unique model-wide. A collision within one concept type
+  keeps its existing message; a cross-type collision names the holder in
+  `error.details.existing_concept_kind`. **Behaviour change:** a model that
+  reuses one id across concept types now errors where it previously succeeded —
+  but that model was already producing an invalid export. (ARC-061)
+
+- **`create_view` left a view behind when it rejected the viewpoint.** The
+  viewpoint was validated *after* `model.add()`, so a call that returned
+  `{"status": "error"}` still added the view — carrying the rejected value as
+  its `viewpoint` property. The natural recovery, retrying with a corrected
+  viewpoint, then failed with `View with ID '...' already exists`, leaving the
+  caller holding a view it did not believe it had created. `update_view` had
+  the same defect and was worse: it applied `name` and `description` before
+  raising, so a failed call renamed the view. Both now validate before any
+  mutation, so a rejected viewpoint changes nothing and the `view_id` stays
+  free for the retry. (ARC-056)
+
+### Added
+
+- **`list_supported_types` now returns `data.viewpoints`.** Viewpoints were the
+  one string-typed enum in the API missing from the catalog the server's own
+  instructions tell callers to consult, so the only way to discover the
+  accepted values was to trigger an error. The new key publishes both accepted
+  namespaces separately — `pyarchimate_slugs` (13, from pyArchimate's
+  `STANDARD_VIEWPOINTS`) and `archi_viewpoint_ids` (25, Archi's canonical ids).
+  They overlap in seven values without either containing the other, which is
+  why a short-form/long-form rule of thumb does not work: `business` is a slug
+  only, `business_process_cooperation` an Archi id only, and a plausible
+  `business_process` is neither. Both the catalog and the rejection message now
+  read the same source, so what the server advertises cannot drift from what it
+  accepts. (ARC-057)
+
 ## [0.7.4] - 2026-07-28
 
 Documentation only. No code or tool behaviour changed.

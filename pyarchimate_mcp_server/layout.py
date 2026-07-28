@@ -91,6 +91,15 @@ MAX_LANE_WIDTH = 1600
 
 LAYER_BAND_PROPERTY_KEY = "mcp:layer_bands"
 
+# Why a requested set of layer bands was not produced. Reported as
+# data rather than left to be inferred from a view property, which
+# cannot distinguish "not applicable" from "failed".
+LAYER_BAND_SKIP_SINGLE_LAYER = "single_layer_view"
+LAYER_BAND_SKIP_COVERAGE_VIEW = "coverage_view"
+LAYER_BAND_SKIP_NOT_REQUESTED = "not_requested"
+LAYER_BAND_SKIP_STRATEGY = "strategy_does_not_use_bands"
+LAYER_BAND_SKIP_ENGINE = "engine_does_not_support_bands"
+
 LAYER_BAND_PADDING_X = 24
 
 LAYER_BAND_PADDING_TOP = 36
@@ -519,15 +528,21 @@ def remove_layer_bands(view: PyArchimateView) -> None:
     view.prop(LAYER_BAND_PROPERTY_KEY, "")
 
 
-def add_layer_bands(view: PyArchimateView) -> None:
+def add_layer_bands(view: PyArchimateView) -> dict[str, Any]:
     """Wrap each occupied ArchiMate layer in a labeled visual band.
 
     Bands are diagram-only Container nodes (Archi's visual Group):
     they never touch the semantic model. Band node ids are recorded
     in a view property so the next layout can remove them first.
+
+    Returns `{"created": int, "reason": str | None}`. The reason is the
+    caller's only way to tell "not applicable" from "failed": the view
+    property alone cannot, because `remove_layer_bands` leaves it as an
+    empty string on a view that used to have bands and no longer
+    qualifies.
     """
     if is_coverage_view(view):
-        return
+        return {"created": 0, "reason": LAYER_BAND_SKIP_COVERAGE_VIEW}
     nodes_by_label: dict[str, list[Any]] = defaultdict(list)
     for node in list(view.nodes):
         if getattr(node, "cat", "Element") != "Element":
@@ -536,7 +551,7 @@ def add_layer_bands(view: PyArchimateView) -> None:
         if label:
             nodes_by_label[label].append(node)
     if len(nodes_by_label) < 2:  # noqa: PLR2004
-        return
+        return {"created": 0, "reason": LAYER_BAND_SKIP_SINGLE_LAYER}
     band_ids = []
     for label, members in sorted(
         nodes_by_label.items(),
@@ -558,6 +573,7 @@ def add_layer_bands(view: PyArchimateView) -> None:
             node.move(band)
         band_ids.append(band.uuid)
     view.prop(LAYER_BAND_PROPERTY_KEY, ",".join(band_ids))
+    return {"created": len(band_ids), "reason": None}
 
 
 def layout_group_children_for_view(view: PyArchimateView) -> None:

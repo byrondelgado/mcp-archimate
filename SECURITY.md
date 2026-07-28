@@ -22,36 +22,74 @@ no HTTP or SSE transport, no authentication layer and no multi-tenancy, because 
 is designed to be launched as a subprocess by an MCP client on your own machine.
 Everything below follows from that.
 
-### It runs with your filesystem rights
+### The file tools are confined to allowed roots
 
 Three tools touch the filesystem:
 
 | Tool | Access |
 | --- | --- |
-| `load_model_from_file` | reads any path you can read |
-| `export_model_to_file` | writes any path you can write |
-| `render_view_to_svg_file` | writes any path you can write |
+| `load_model_from_file` | reads inside the allowed **read** roots |
+| `export_model_to_file` | writes inside the allowed **write** roots |
+| `render_view_to_svg_file` | writes inside the allowed **write** roots |
 
-**There is currently no allowed-root restriction.** The server has exactly the
-filesystem rights of the account that launched it. If your MCP client runs it as
-you, it can read your documents and overwrite your files — including files it did
-not create.
+Two environment variables configure the boundary. Each takes one or more
+**absolute** paths, separated by the platform path separator (`:` on macOS and
+Linux, `;` on Windows). `~` is expanded.
 
-This is normal for a local MCP server, and it is the same trust you extend to any
-CLI tool you run. It is worth stating plainly because the *caller* is usually an
-LLM agent, not a person typing a path. Two consequences follow:
+| Variable | Controls |
+| --- | --- |
+| `MCP_ARCHIMATE_ALLOWED_READ_ROOTS` | where `load_model_from_file` may read |
+| `MCP_ARCHIMATE_ALLOWED_WRITE_ROOTS` | where the two writing tools may write |
 
-- **Paths in tool calls are chosen by the agent**, which may be acting on content
-  it read from a model file, a web page, or a document. Treat a path argument the
-  way you would treat a shell command an agent proposed.
-- **Exports overwrite without prompting.** Point them at a working directory, not
-  at somewhere with irreplaceable files.
+**Unset, both default to your home directory.** That keeps the documented
+workflows working — the quickstarts write to `~/Desktop` — while putting `/etc`,
+`/usr`, system locations and other users' home directories out of reach. Set the
+variables explicitly to narrow it further; a dedicated models directory is the
+tightest useful setting:
 
-If you need a hard boundary today, run the server in a container or under a
-dedicated user account with access only to the directory holding your models.
+```json
+{
+  "mcpServers": {
+    "archimate": {
+      "command": "uvx",
+      "args": ["mcp-archimate"],
+      "env": {
+        "MCP_ARCHIMATE_ALLOWED_READ_ROOTS": "/Users/you/Models",
+        "MCP_ARCHIMATE_ALLOWED_WRITE_ROOTS": "/Users/you/Models/exports"
+      }
+    }
+  }
+}
+```
 
-Configurable allowed read and write roots are planned (`ARC-050`). Until they
-land, the boundary is the one you impose from outside.
+Every path is expanded and fully resolved before the check, so `..` segments and
+symlinks cannot escape: a symlink inside an allowed root that points outside it
+resolves to its real target and is refused. A refused path returns
+`PATH_OUTSIDE_ALLOWED_ROOTS` with the resolved path and the configured roots in
+`error.details`. An unusable configuration — an empty setting, or a relative
+root — returns `INVALID_ALLOWED_ROOTS` rather than silently falling back.
+
+**The read check runs before the existence check**, so a path outside the roots
+cannot be used to probe for files: an existing file you may not read is
+indistinguishable from a missing one.
+
+What this does **not** do:
+
+- **It is not a sandbox.** The server still runs as the account that launched it,
+  and the roots are enforced in-process. It stops an agent from wandering; it does
+  not contain a compromised process.
+- **It does not protect the allowed roots from each other.** With the default of
+  home, `~/.ssh` is still readable. Narrow the roots if that matters.
+- **Exports still overwrite without prompting** inside an allowed root. Point them
+  at a working directory, not at somewhere with irreplaceable files.
+
+The reason this exists at all is that the *caller* is usually an LLM agent, not a
+person typing a path, and that agent may be acting on content it read from a model
+file, a web page, or a document. Treat a path argument the way you would treat a
+shell command an agent proposed.
+
+For a hard boundary, run the server in a container or under a dedicated user
+account with access only to the directory holding your models.
 
 ### Model files are untrusted input
 
