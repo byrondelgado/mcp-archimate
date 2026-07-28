@@ -1,9 +1,11 @@
 ---
 id: ARC-049
 title: Publish 0.7.0 to TestPyPI then PyPI and validate the public install
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-07-27 21:10'
+updated_date: '2026-07-28 10:50'
 labels: []
 milestone: m-0
 dependencies:

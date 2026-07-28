@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-07-28
+
+### Fixed
+
+- **The server reported the MCP SDK's version as its own.** `initialize` returned
+  `serverInfo` as `archimate-mcp 1.28.1` — the pre-rename name, and the SDK
+  version rather than this package's. `FastMCP` accepts no `version` argument, so
+  the low-level `Server` kept `version=None` and fell back to `pkg_version("mcp")`,
+  meaning the reported version tracked whichever SDK release was pinned. Clients
+  now show `mcp-archimate` and the real package version. Display metadata only —
+  no protocol behaviour changed — but a version that follows the SDK is
+  misleading when diagnosing a problem against a specific release. (ARC-053)
+
 ## [0.7.0] - 2026-07-28
 
 **First public release.** The project is now open source on GitHub and published

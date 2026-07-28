@@ -114,55 +114,113 @@ them.
 
 ## Releasing
 
-Maintainers only. Shipping a version is: bump, tag, approve.
+Maintainers only. Shipping a version is **bump, rehearse, tag, approve**. The
+pipeline is `.github/workflows/release.yml`; the design and its reasoning are in
+`decision-016`.
+
+### The runbook
 
 ```bash
-# 1. On dev: update CHANGELOG.md with a "## [X.Y.Z] - YYYY-MM-DD" section,
-#    and bump __version__ in pyarchimate_mcp_server/__init__.py.
-#    That file is the ONLY place the version lives — pyproject.toml reads it
-#    via [tool.hatch.version].
+# 1. On dev: add a "## [X.Y.Z] - YYYY-MM-DD" section to CHANGELOG.md and bump
+#    __version__ in pyarchimate_mcp_server/__init__.py. That file is the ONLY
+#    place the version lives — pyproject.toml reads it via [tool.hatch.version].
 
-# 2. Check locally before pushing anything.
+# 2. Check locally before pushing anything. The first command is the same one
+#    CI runs, so a failure here is a failure there.
 uv run python scripts/check_release_version.py vX.Y.Z
 uv run pytest && uv run ruff check && uv run ruff format --check
 
-# 3. Merge dev into main, then tag on main.
+# 3. Rehearse against TestPyPI. Optional for a patch, worth it for anything
+#    touching packaging, dependencies or metadata.
+gh workflow run release.yml -f version=vX.Y.Z --ref main
+
+# 4. Merge to main and tag. Tags are cut on main only.
 git checkout main && git merge --ff-only dev && git push origin main
 git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z
 
-# 4. Approve the `pypi` environment when GitHub asks. That is the last
-#    human checkpoint — after it, the version is permanent.
+# 5. Approve the `pypi` environment when GitHub asks — you will get an email and
+#    a "Review pending deployments" banner on the run page.
 ```
 
-The workflow verifies that the tag, `__version__` and the CHANGELOG all agree
-**before** building. A published version can be yanked but never reused, so a
-mismatch stops the run rather than producing a wrong artefact.
+Pushing the tag is **not** the irreversible step; the approval in step 5 is.
+Everything before it can be undone by deleting the tag.
 
-### Rehearsing a release
+### What the pipeline does
 
-Run the **Release** workflow manually from the Actions tab with a version input.
-That path publishes to TestPyPI only and never touches PyPI, so it cannot consume
-the production approval gate.
+| Job | Checks |
+| --- | --- |
+| **Verify** | tag, `__version__` and CHANGELOG agree; lint; format; tests |
+| **Build** | `uv build --no-sources`; sdist hygiene gate; installs the wheel into a clean venv and drives it over stdio JSON-RPC |
+| **Publish** | Trusted Publishing (OIDC). PyPI on a tag push, TestPyPI on manual dispatch. Never both |
+| **GitHub Release** | attaches both artefacts, notes extracted from the CHANGELOG section |
 
-### One-time setup
+### Rehearsing
 
-This is configuration on GitHub and PyPI, not in the repository. It must exist
-before the first release, and it is why no API token is stored anywhere.
+Run the **Release** workflow manually from the Actions tab, or with
+`gh workflow run` as above. That path targets the `testpypi` environment and
+cannot reach PyPI — the production job is gated on
+`if: github.event_name == 'push'`. It also means a rehearsal never consumes the
+production approval, so the gate stays meaningful.
 
-1. **PyPI** — at <https://pypi.org/manage/account/publishing/>, add a *pending*
-   Trusted Publisher:
-   - PyPI project name: `mcp-archimate`
-   - Owner: `byrondelgado`, repository: `mcp-archimate`
-   - Workflow: `release.yml`
-   - Environment: `pypi`
-2. **TestPyPI** — the same at <https://test.pypi.org/manage/account/publishing/>,
-   with environment `testpypi`.
-3. **GitHub environments** — under Settings → Environments, create `pypi` with a
-   **required reviewer** (yourself), and `testpypi` with none.
+To check a rehearsal actually works, install it somewhere clean:
 
-The `pypi` environment's required reviewer is what turns a pushed tag into a
-prompt rather than an immediate publish. Without it the workflow still runs, but
-nothing pauses for a human.
+```bash
+uv venv /tmp/check
+uv pip install --python /tmp/check/bin/python \
+  --index-url https://test.pypi.org/simple/ \
+  --extra-index-url https://pypi.org/simple/ \
+  --index-strategy unsafe-best-match \
+  mcp-archimate
+uv run python scripts/smoke_test_mcp.py /tmp/check/bin/mcp-archimate --expect-tools 45
+```
+
+The `--extra-index-url` and `--index-strategy` are needed because dependencies
+live on real PyPI, not TestPyPI.
+
+### A version number is permanent
+
+PyPI never lets a version be reused, even after deletion. If a release is bad:
+
+- **Yank it** — new installs skip it, but anyone who pinned `==X.Y.Z` keeps
+  working. The polite retraction, and almost always the right one.
+- **Delete it** — files are removed and every pinned install breaks. Rarely
+  correct on a public index.
+
+Either way the fix ships as the next patch version, never as a re-upload. This is
+why `check_release_version.py` runs before the build rather than after.
+
+### Editing a workflow
+
+**Verify that an action tag actually resolves before pinning it.** Reading the
+latest *release* name is not the same check — `astral-sh/setup-uv` publishes
+releases up to `v9.0.0` but stopped publishing floating major tags after `v7`, so
+`@v9` does not exist. Pinning it made every job fail at "Set up job" on the first
+public push.
+
+```bash
+gh api repos/OWNER/REPO/git/ref/tags/TAG --silent -i | head -1   # want 200
+```
+
+Official `actions/*` do publish floating majors, so `@v7` is fine there.
+
+### One-time setup — already done
+
+Recorded for reference and for anyone forking this. No API token is stored
+anywhere; publishing is entirely OIDC.
+
+| Where | What |
+| --- | --- |
+| [PyPI](https://pypi.org/manage/account/publishing/) | Trusted Publisher: project `mcp-archimate`, owner `byrondelgado`, repo `mcp-archimate`, workflow `release.yml`, environment `pypi` |
+| [TestPyPI](https://test.pypi.org/manage/account/publishing/) | identical, environment `testpypi` |
+| GitHub → Settings → Environments | `pypi` with a **required reviewer**; `testpypi` with none |
+
+Before the first release these are added as *pending* publishers, which allow
+creating a project that does not exist yet. A pending publisher does **not**
+reserve the name — publishing is what claims it. Once the project exists the
+pending entry becomes an ordinary Trusted Publisher automatically.
+
+The required reviewer on `pypi` is what turns a pushed tag into a prompt instead
+of an immediate publish. Without it the workflow still runs, but nothing pauses.
 
 ## Reporting security issues
 

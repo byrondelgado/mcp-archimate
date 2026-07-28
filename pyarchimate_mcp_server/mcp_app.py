@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+from pyarchimate_mcp_server import __version__
 from pyarchimate_mcp_server.dependencies import AppContext
 from pyarchimate_mcp_server.model_manager import ArchimateModelManager
 
@@ -92,11 +93,23 @@ Tooling notes:
 
 
 mcp = FastMCP(
-    name="archimate-mcp",
+    # Matches the distribution, the import package's project name and the console
+    # script. Clients show this in their server list.
+    name="mcp-archimate",
     instructions=SERVER_INSTRUCTIONS,
     lifespan=app_lifespan,
     dependencies=["pyArchimate", "lxml", "pydantic"],
 )
+
+# FastMCP exposes no `version` parameter, so the low-level Server keeps
+# `version=None` and `create_initialization_options()` falls back to
+# `pkg_version("mcp")` — which makes every client report this server as the MCP
+# SDK's version (1.28.1 at time of writing) rather than its own. Set it directly.
+# Reaching for the private attribute is deliberate: it is the only seam the SDK
+# offers, and reporting the SDK's version is actively misleading when someone is
+# diagnosing a bug against a specific release. `test_server_identity.py` fails if
+# an SDK upgrade ever restores the fallback.
+mcp._mcp_server.version = __version__  # noqa: SLF001
 
 
 def get_model_manager() -> ArchimateModelManager:
