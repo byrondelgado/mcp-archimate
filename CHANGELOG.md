@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] - 2026-07-28
+
+Documentation only. No code or tool behaviour changed.
+
+### Fixed
+
+- **Every link on the PyPI project page was broken.** README.md is the PyPI
+  `long_description`, and relative markdown links resolve against the project
+  page rather than the repository — so `[User Guide](docs/USER_GUIDE.md)` became
+  `https://pypi.org/project/mcp-archimate/docs/USER_GUIDE.md` and 404'd. That
+  affected all twelve navigational links, including the license badge, the whole
+  Documentation table and the SECURITY and CONTRIBUTING pointers. All are now
+  absolute `github.com` URLs, which work identically on GitHub. (ARC-055)
+
 ## [0.7.2] - 2026-07-28
 
 Documentation only. No code or tool behaviour changed.

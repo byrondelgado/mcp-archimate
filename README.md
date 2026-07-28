@@ -256,7 +256,7 @@ have to read this server's source code to work out how to use it.
 | **Prompts** (4) | guided load → inspect → edit → validate → export workflows |
 
 Full parameter and response documentation is in the
-**[User Guide](docs/USER_GUIDE.md)**.
+**[User Guide](https://github.com/byrondelgado/mcp-archimate/blob/main/docs/USER_GUIDE.md)**.
 
 ### Two export formats — they are not interchangeable
 
@@ -278,7 +278,7 @@ diagonals through boxes.
 ## Security considerations
 
 Two things are worth knowing before you point an agent at this server. The full
-picture, including how to report a vulnerability, is in [SECURITY.md](SECURITY.md).
+picture, including how to report a vulnerability, is in [SECURITY.md](https://github.com/byrondelgado/mcp-archimate/blob/main/SECURITY.md).
 
 **It has your filesystem rights.** `load_model_from_file` reads any path you can
 read; `export_model_to_file` and `render_view_to_svg_file` write any path you can
@@ -305,14 +305,14 @@ credentials of any kind.
 
 | Document | For |
 | --- | --- |
-| [User Guide](docs/USER_GUIDE.md) | Everyone. Tool parameters, response schemas, workflows, troubleshooting |
-| [Technical Architecture](docs/TECHNICAL_ARCHITECTURE.md) | Contributors. Design, layers, pyArchimate usage patterns |
-| [Layout Improvement Plan](docs/LAYOUT_IMPROVEMENT_PLAN.md) | Layout work. Measurements and rejected approaches |
-| [Quality & Validation PRD](docs/MCP_Feedback_Improvements.md) | The validation tool suite and the constraint-engine split |
-| [CHANGELOG](CHANGELOG.md) | What changed, newest first |
-| [CONTRIBUTING](CONTRIBUTING.md) | Setup, branch model, how to propose changes |
-| [SECURITY](SECURITY.md) | Trust model and vulnerability disclosure |
-| `.backlog/decisions/` | Architecture decision records — why things are the way they are |
+| [User Guide](https://github.com/byrondelgado/mcp-archimate/blob/main/docs/USER_GUIDE.md) | Everyone. Tool parameters, response schemas, workflows, troubleshooting |
+| [Technical Architecture](https://github.com/byrondelgado/mcp-archimate/blob/main/docs/TECHNICAL_ARCHITECTURE.md) | Contributors. Design, layers, pyArchimate usage patterns |
+| [Layout Improvement Plan](https://github.com/byrondelgado/mcp-archimate/blob/main/docs/LAYOUT_IMPROVEMENT_PLAN.md) | Layout work. Measurements and rejected approaches |
+| [Quality & Validation PRD](https://github.com/byrondelgado/mcp-archimate/blob/main/docs/MCP_Feedback_Improvements.md) | The validation tool suite and the constraint-engine split |
+| [CHANGELOG](https://github.com/byrondelgado/mcp-archimate/blob/main/CHANGELOG.md) | What changed, newest first |
+| [CONTRIBUTING](https://github.com/byrondelgado/mcp-archimate/blob/main/CONTRIBUTING.md) | Setup, branch model, how to propose changes |
+| [SECURITY](https://github.com/byrondelgado/mcp-archimate/blob/main/SECURITY.md) | Trust model and vulnerability disclosure |
+| [Decision records](https://github.com/byrondelgado/mcp-archimate/tree/main/.backlog/decisions) | Architecture decision records — why things are the way they are |
 
 ## Development
 
@@ -326,7 +326,7 @@ uv run ruff check
 uv run mcp dev pyarchimate_mcp_server/server.py   # with MCP Inspector
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch model and conventions, and
+See [CONTRIBUTING.md](https://github.com/byrondelgado/mcp-archimate/blob/main/CONTRIBUTING.md) for the branch model and conventions, and
 `CLAUDE.md` for the repository's operating contract — it documents several things
 that look like mistakes and are not.
 
@@ -339,8 +339,8 @@ this project is useful to you, pyArchimate is the reason.
 
 ## License
 
-**GPL-3.0-or-later.** See [LICENSE](LICENSE) for the full text and
-[NOTICE](NOTICE) for attribution.
+**GPL-3.0-or-later.** See [LICENSE](https://github.com/byrondelgado/mcp-archimate/blob/main/LICENSE) for the full text and
+[NOTICE](https://github.com/byrondelgado/mcp-archimate/blob/main/NOTICE) for attribution.
 
 This is inherited, not chosen. pyArchimate is GPL-3.0-only and is a required
 runtime dependency — the server cannot function without it — so the combined work
